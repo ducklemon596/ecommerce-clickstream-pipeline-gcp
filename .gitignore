@@ -1,0 +1,14 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Large source archive and extracted sample (may contain customer data)
+glamira_ubl_oct2019_nov2019.tar.gz
+data/summary_sample.bson

@@ -8,14 +8,12 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "pandas>=2.3.3",
     "pymongo>=4.18.3",
 ]
 
 [project.scripts]
-glamira-pipeline = "glamira_pipeline:main"
-extract-sample = "glamira_pipeline.extract_sample:main"
-generate-reports = "glamira_pipeline.generate_reports:main"
+extract-sample = "glamira_pipeline.sampling.extract:main"
+assess-data-quality = "glamira_pipeline.quality.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

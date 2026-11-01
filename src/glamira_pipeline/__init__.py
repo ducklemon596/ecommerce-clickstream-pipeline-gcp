@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from glamira-pipeline!")
+"""Local Glamira sample extraction and data-quality assessment."""

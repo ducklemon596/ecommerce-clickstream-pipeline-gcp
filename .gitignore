@@ -11,4 +11,11 @@ wheels/
 
 # Large source archive and extracted sample (may contain customer data)
 glamira_ubl_oct2019_nov2019.tar.gz
-data/summary_sample.bson
+/data/
+
+# Local specs, architecture notes, and binary data files
+/architect/
+*.bin
+*.BIN
+Specification.md
+AGENTS.md

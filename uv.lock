@@ -51,12 +51,25 @@ name = "glamira-pipeline"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "ip2location" },
     { name = "pymongo", version = "4.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pymongo", version = "4.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pymongo", specifier = ">=4.18.3" }]
+requires-dist = [
+    { name = "ip2location", specifier = ">=8.11.0" },
+    { name = "pymongo", specifier = ">=4.18.3" },
+]
+
+[[package]]
+name = "ip2location"
+version = "8.11.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/f8/b44e07221217f2ef3e1e141fd13fefb439e077696b6a33f3921b323807bc/ip2location-8.11.0.tar.gz", hash = "sha256:444149a741f6575d7711cf5414cfb81f0c44f830e2e94ab968d74665f8baaa31", size = 14084, upload-time = "2025-09-04T06:09:56.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/3a/60a919dc2b3a475472b57994234c26ca6a42bded7140de31e6cd695237cc/ip2location-8.11.0-py3-none-any.whl", hash = "sha256:cee21e91ccffbbc5486c588fac5ea5d210feb7e1754d17090e7c6ab358bab16a", size = 14482, upload-time = "2025-09-04T06:09:54.921Z" },
+]
 
 [[package]]
 name = "pymongo"

@@ -1,0 +1,132 @@
+"""Local MongoDB access and deterministic sample preparation."""
+from __future__ import annotations
+
+import hashlib
+from itertools import islice
+from pathlib import Path
+from typing import Any
+
+from bson import BSON
+from pymongo import MongoClient, ReplaceOne
+from pymongo.uri_parser import parse_uri
+
+from glamira_pipeline.sampling.json_reader import iter_json_documents
+
+MAX_SAMPLE = 10_000
+SOURCE_COLLECTION = "events"
+METADATA_COLLECTION = "sample_metadata"
+RESULT_COLLECTION = "ip_locations"
+RUN_COLLECTION = "enrichment_runs"
+
+
+def file_sha256(path: Path) -> str:
+    """Return a streamed SHA-256 for a local input file; use to bind checkpoints."""
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def local_server_identity(uri: str) -> list[list]:
+    """Return local host/port pairs from a URI without storing its credentials."""
+    if not uri.startswith("mongodb://"):
+        raise ValueError("Only local mongodb:// connections are supported")
+    parsed = parse_uri(uri, warn=False)
+    if any(host.lower() not in {"localhost", "127.0.0.1", "::1"} for host, _ in parsed["nodelist"]):
+        raise ValueError("MongoDB host must be local for this sample workflow")
+    return [[host.lower(), port] for host, port in parsed["nodelist"]]
+
+
+def local_client(uri: str) -> MongoClient:
+    """Create a local-only MongoDB client from uri; reject remote hosts and SRV URLs."""
+    local_server_identity(uri)
+    # Avoid replica-set discovery redirecting a local-only sample to remote hosts.
+    return MongoClient(uri, directConnection=True, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
+
+
+def sample_record(row_id: int, event: dict) -> dict:
+    """Return the stable MongoDB sample record for an event and ordinal ID."""
+    record = {"_id": row_id}
+    if "ip" in event:
+        record["ip"] = event["ip"]
+    return record
+
+
+def collection_digest(collection: Any) -> tuple[int, str]:
+    """Hash the ordered source sample, including BSON types and selected IP fields."""
+    digest = hashlib.sha256()
+    count = 0
+    for event in collection.find({}, {"ip": 1}).sort("_id", 1):
+        if event.get("_id") != count or isinstance(event.get("_id"), bool):
+            raise ValueError("sample IDs must be contiguous and stable")
+        digest.update(BSON.encode(sample_record(count, event)))
+        count += 1
+    return count, digest.hexdigest()
+
+
+def seed_sample(db: Any, sample: Path, limit: int) -> dict:
+    """Seed at most 10,000 sequential JSON events into an isolated local database.
+
+    Inputs are a MongoDB database, Extended JSON file and row limit. Returns
+    source metadata; reruns safely replace matching sample rows. Refuses a
+    different input in an existing sample database.
+    """
+    if not 1 <= limit <= MAX_SAMPLE:
+        raise ValueError(f"sample limit must be between 1 and {MAX_SAMPLE}")
+    identity = {"sample_sha256": file_sha256(sample), "limit": limit,
+                "selection": "sequential JSON prefix", "sample_file": sample.name}
+    metadata = db[METADATA_COLLECTION]
+    previous = metadata.find_one({"_id": "sample"})
+    if previous and previous.get("identity") != identity:
+        raise ValueError("existing local sample has a different identity; choose a new database")
+    if previous and previous.get("status") == "complete":
+        digest = hashlib.sha256()
+        count = 0
+        for count, event in enumerate(islice(iter_json_documents(sample), limit), start=1):
+            digest.update(BSON.encode(sample_record(count - 1, event)))
+        actual_count, actual_digest = collection_digest(db[SOURCE_COLLECTION])
+        if count != limit or actual_count != limit or actual_digest != digest.hexdigest():
+            raise ValueError("existing sample content changed")
+        if previous.get("events_sha256") != actual_digest:
+            metadata.update_one({"_id": "sample"}, {"$set": {"events_sha256": actual_digest}})
+        return identity
+    # Never overwrite an unrelated collection without a matching sample marker.
+    if previous is None and SOURCE_COLLECTION in db.list_collection_names():
+        raise ValueError("events collection already exists without sample metadata")
+    metadata.replace_one({"_id": "sample"}, {"_id": "sample", "identity": identity, "status": "seeding"}, upsert=True)
+    batch = []
+    count = 0
+    digest = hashlib.sha256()
+    for count, event in enumerate(islice(iter_json_documents(sample), limit), start=1):
+        record = sample_record(count - 1, event)
+        digest.update(BSON.encode(record))
+        batch.append(ReplaceOne({"_id": count - 1}, record, upsert=True))
+        if len(batch) == 250:
+            db[SOURCE_COLLECTION].bulk_write(batch, ordered=True)
+            batch.clear()
+    if batch:
+        db[SOURCE_COLLECTION].bulk_write(batch, ordered=True)
+    if count != limit:
+        raise ValueError("sample contains fewer events than requested")
+    metadata.replace_one({"_id": "sample"}, {"_id": "sample", "identity": identity,
+                                                  "events_sha256": digest.hexdigest(), "status": "complete"})
+    return identity
+
+
+def sample_identity(db: Any, sample: Path) -> dict:
+    """Verify source file and sample collection contents, then return their identity."""
+    metadata = db[METADATA_COLLECTION].find_one({"_id": "sample"})
+    if not metadata or metadata.get("status") != "complete":
+        raise ValueError("seed the local sample before enrichment")
+    info = next(db.list_collections(filter={"name": SOURCE_COLLECTION}), None)
+    if not info or not info.get("info", {}).get("uuid"):
+        raise ValueError("sample collection identity is unavailable")
+    identity = metadata["identity"]
+    if file_sha256(sample) != identity["sample_sha256"]:
+        raise ValueError("source JSON sample has changed")
+    count, digest = collection_digest(db[SOURCE_COLLECTION])
+    if count != identity["limit"] or digest != metadata.get("events_sha256"):
+        raise ValueError("sample collection content changed; use a new database")
+    return {"database": db.name, "collection": SOURCE_COLLECTION,
+            "collection_uuid": bytes(info["info"]["uuid"]).hex(), "events_sha256": digest, **identity}

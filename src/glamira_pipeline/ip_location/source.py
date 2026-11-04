@@ -20,7 +20,7 @@ RUN_COLLECTION = "enrichment_runs"
 
 
 def file_sha256(path: Path) -> str:
-    """Return a streamed SHA-256 for a local input file; use to bind checkpoints."""
+    """Return a streamed SHA-256 for a local input file; use to identify immutable inputs."""
     digest = hashlib.sha256()
     with path.open("rb") as source:
         while chunk := source.read(1024 * 1024):
@@ -112,21 +112,3 @@ def seed_sample(db: Any, sample: Path, limit: int) -> dict:
     metadata.replace_one({"_id": "sample"}, {"_id": "sample", "identity": identity,
                                                   "events_sha256": digest.hexdigest(), "status": "complete"})
     return identity
-
-
-def sample_identity(db: Any, sample: Path) -> dict:
-    """Verify source file and sample collection contents, then return their identity."""
-    metadata = db[METADATA_COLLECTION].find_one({"_id": "sample"})
-    if not metadata or metadata.get("status") != "complete":
-        raise ValueError("seed the local sample before enrichment")
-    info = next(db.list_collections(filter={"name": SOURCE_COLLECTION}), None)
-    if not info or not info.get("info", {}).get("uuid"):
-        raise ValueError("sample collection identity is unavailable")
-    identity = metadata["identity"]
-    if file_sha256(sample) != identity["sample_sha256"]:
-        raise ValueError("source JSON sample has changed")
-    count, digest = collection_digest(db[SOURCE_COLLECTION])
-    if count != identity["limit"] or digest != metadata.get("events_sha256"):
-        raise ValueError("sample collection content changed; use a new database")
-    return {"database": db.name, "collection": SOURCE_COLLECTION,
-            "collection_uuid": bytes(info["info"]["uuid"]).hex(), "events_sha256": digest, **identity}

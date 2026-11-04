@@ -54,59 +54,8 @@ The earlier [event-field specification](docs/specifications/event_type_expected_
 uv run python -m unittest discover -s tests/unit -v
 ```
 
-## Local IP geolocation sample
+## IP location enrichment
 
-This workflow seeds the first 1,000 events from the existing sequential JSON sample into an isolated **local** MongoDB database, then resolves unique IPs using the IP2Location BIN file offline. It does not process the full dataset. Install the project with `uv sync` and start a local MongoDB instance first. The commands accept only loopback MongoDB hosts; set `MONGODB_URI` in the environment if a local port or authentication differs from `127.0.0.1:27017`. Do not use an SSH tunnel for this local sample: a loopback address can also forward to a remote server.
+The maintained workflow uses an unsorted MongoDB cursor with requested batch size **50K**, an in-memory IP Counter, durable counter output, offline BIN lookup and verified staging publication. SQLite checkpoint and benchmark implementations have been retired.
 
-For example, to start an isolated local MongoDB with Docker and a persistent sample volume:
-
-```bash
-docker run -d --name glamira-ip-sample-local -p 127.0.0.1:27019:27017 \
-  --mount type=volume,source=glamira_ip_sample_data,target=/data/db mongo:8.0
-export MONGODB_URI=mongodb://127.0.0.1:27019/
-```
-
-Choose an unused local port. If the container already exists, use `docker port glamira-ip-sample-local 27017/tcp` to find its port. Stop the container with `docker stop glamira-ip-sample-local`; the named volume retains its sample data.
-
-```bash
-uv run seed-ip-sample --limit 1000
-uv run enrich-ip-locations --bin IP-COUNTRY-REGION-CITY.BIN
-```
-
-The dedicated database defaults to `glamira_ip_sample`, with source collection `events`, result collection `ip_locations`, and BIN provenance collection `enrichment_runs`. A sample can contain at most 10,000 events. Enrichment reads only the `ip` field; records with missing, null, empty, invalid and non-public values remain visible in the metrics. IPs are normalized and deduplicated before lookup. Each `ip_locations` document uses normalized IP as `_id` and stores `ip_version`, `status`, `country_code`, `country_name`, `region`, `city`, and `database_id`. The BIN SHA-256 is the stable `database_id`; the matching `enrichment_runs` document stores the BIN filename, date, edition, checksum, and processing timestamp. Event frequency is kept in local checkpoint/coverage metrics, not duplicated into the location collection. MongoDB's default `_id` index provides uniqueness; no separate IP index is created.
-
-Outputs are in ignored `data/ip_location_sample/`: `ip_locations.csv` follows the `ip_locations` schema and contains private IP information, `checkpoint.sqlite3` stores progress and event counts used for coverage, and `ip_location_report.md` plus `ip_location_metrics.json` contain aggregate statistics. Custom output and checkpoint paths must also be under `data/`. Event coverage divides successfully geolocated events by all sampled events; unique-IP coverage divides resolved IPs by valid unique IPs. The 80% goal is reported as a target, not assumed achieved. A sequential prefix is not representative of the full collection.
-
-Run the same command to resume. Event batches and their progress are committed together; MongoDB upserts are safe to repeat after interruption. The checkpoint is tied to the sample collection identity, source file, connection and BIN checksum. Use a fresh local database and checkpoint for a different sample or BIN; `--retry-failed` retries failed lookups. Keep the seeded source collection unchanged and run only one enrichment process per checkpoint at a time.
-
-The sample command uses seeded integer IDs and rejects non-sample database names. Full-dataset processing uses the separate command below, which checkpoints the source's BSON `_id` values and targets dedicated output collections.
-
-### Full collection enrichment (VM execution)
-
-`uv run enrich-ip-locations-full` is a separate full-data command. It streams `countly.summary` in ascending `_id` order with bounded MongoDB batches, stores deduplicated IP counts and the BSON resume cursor in a private SQLite checkpoint, then looks up unique addresses with the memory-mapped BIN. The target is `countly.ip_locations`; BIN provenance is upserted into `countly.enrichment_runs`. The output CSV follows the same location schema. The command does not drop collections or create an extra IP index.
-
-The scan asks MongoDB only for `ip`, then validates addresses in Python. Missing, null or invalid values are counted; no fallback field is used.
-
-```mermaid
-flowchart LR
-    A[MongoDB events] -->|ip only; batches of 5,000| B[Python event scan]
-    B --> C[Validate and normalize ip with ipaddress]
-    C -->|missing or invalid| G[Count status in SQLite]
-    C -->|valid| H[Deduplicate by normalized IP in SQLite]
-    H --> I[Offline BIN lookup, batches of 500]
-    I --> J[Upsert ip_locations]
-    J --> K[CSV and aggregate report]
-```
-
-Run it on the VM itself so MongoDB is reached through loopback. Supply `MONGODB_URI` from a protected environment/config file, never as a command-line argument. Choose checkpoint/output paths on a mounted filesystem with enough room for the SQLite unique-IP index and CSV, and preserve them across retries:
-
-```bash
-uv run enrich-ip-locations-full \
-  --bin /path/to/IP-COUNTRY-REGION-CITY.BIN \
-  --checkpoint /path/to/private/ip-location-checkpoint.sqlite3 \
-  --output-dir /path/to/private/ip-location-output
-```
-
-The checkpoint is bound to source and destination collection UUIDs and the BIN checksum. It assumes the source collection remains unchanged during the scan; prevent concurrent source writes while enriching. Restarting with the same checkpoint resumes the `_id` scan and replays safe upserts. This command is intended for VM execution and must first be validated against the actual source and free disk space. The currently running VM has not completed a full enrichment run.
-
-The supplied BIN header identifies DB3 dated 2016-11-29: it provides country, region and city for IPv4, but no latitude, longitude or IPv6 ranges. It predates the 2019 events, so the lookup is an estimate rather than verified historical location. Unsupported IPv6, non-public addresses, no-match and failed lookups are counted separately. Confirm the database's license before any redistribution.
+See the [IP Location README](src/glamira_pipeline/ip_location/README.md) for sample/full commands, schema, recovery limitations and measured comparisons explaining the choice.

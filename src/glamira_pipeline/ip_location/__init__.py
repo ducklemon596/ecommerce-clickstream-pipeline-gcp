@@ -1,1 +1,1 @@
-"""Local sample IP geolocation using an offline IP2Location database."""
+"""Counter 50K IP enrichment with offline lookup and verified publication."""

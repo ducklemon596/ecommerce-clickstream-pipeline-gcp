@@ -189,3 +189,52 @@ Diễn giải:
 - Cấu trúc chỉ quan sát trên **một sản phẩm**, loại `simple`, attribute set `diamonds`. Sản phẩm `configurable`, đã ngừng bán, hoặc thuộc loại khác (vòng tay, dây chuyền...) có thể có cấu trúc khác.
 - Quan sát qua trình duyệt nhúng; không kiểm tra Terms of Service của Glamira.
 - Website hiện tại có thể đã đổi tên/category so với 2019; sản phẩm 2019 có thể đã bị xoá (404).
+
+## 7. Crawler `react_data`: kiểm chứng store và test tốc độ (12/11/2026)
+
+Code: `uv run crawl-products` (`src/glamira_pipeline/products/crawl.py`). Client là `urllib` với User-Agent trung thực `glamira-pipeline-research/0.1`, gzip, 1 luồng. Crawler dừng ngay khi gặp 401/403/429 hoặc trang không phải JSON.
+
+### Store tiếng Anh (1 request mỗi host, ID 100002, nghỉ 3 s)
+
+Cả 11 host đều trả 200 JSON với tên tiếng Anh. `?currency=` **không** đổi được currency trong cùng host (`.co.uk` với `USD` vẫn trả GBP). Giá khác nhau theo store, không chỉ là quy đổi tỷ giá: `.com` có `price` 901 USD còn `.africa` có 968 USD.
+
+| Ưu tiên | Host | Currency | `store_code` | `price` | `sale_price` |
+| ---: | --- | --- | --- | ---: | ---: |
+| 1 | www.glamira.com | USD | glus | 901 | 1357.45 |
+| 2 | www.glamira.africa | USD | glaf | 968 | 1407.94 |
+| 3 | www.glamira.ie | EUR | glie | 832 | 1254.60 |
+| 4 | www.glamira.com.mt | EUR | glmt | 832 | 1254.60 |
+| 5 | www.glamira.co.uk | GBP | glgb | 720 | 1084.60 |
+| 6–11 | .com.au, .ca, .sg, .co.nz, .co.za, .ae | AUD, CAD, SGD, NZD, ZAR, AED | glau … glae | — | — |
+
+Gzip giảm response từ khoảng 834 KB xuống khoảng 25 KB với 100002 (trung bình khoảng 11 KB mỗi request trong lần test bên dưới).
+
+### Tăng tốc theo nấc
+
+Sample là 200 ID ngẫu nhiên (`--sample 200 --seed 7`) từ 12,734 ID có trong pool `$sample` 300K ở local. **Đây chưa phải danh sách distinct từ MongoDB**: lần truy vấn MongoDB còn chờ credential read-only.
+
+| Nấc | `--delay` | Request | Thời gian | req/s thực tế | p50 / p95 latency | Kết quả |
+| ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 1 | 3 s | 40 | 166 s | 0.24 | 1.02 / 3.28 s | 40 ok |
+| 2 | 2 s | 40 | 117 s | 0.34 | 0.87 / 1.76 s | 40 ok; bỏ qua 40 ID đã xong |
+| 3 | 1 s | 44 | 81 s | 0.55 | 0.89 / 1.20 s | 38 ok, 6 not_found (2 ID × 3 store) |
+| 4 | 0.5 s (giới hạn) | 80 | 108 s | 0.74 | 0.87 / 1.32 s | 80 ok |
+
+- **Không bị chặn ở nấc nào**, nên không cần jitter. Mình không tăng quá 0.5 s/1 luồng (≤ 2 req/s) để tôn trọng site.
+- Ở 1 luồng, tốc độ bị giới hạn bởi latency (khoảng 0.9 s), nên thực tế chỉ đạt khoảng 0.74 req/s.
+- Mọi ID tìm thấy đều có ở store ưu tiên số 1 (`.com`). 2 ID (110296, 110328) trả 404 ở cả `.com`, `.africa` và `.ie`.
+- **Ước tính cho 12,734 ID:** khoảng 4.8 giờ ở nấc 4, khoảng 6.4 giờ ở nấc 3; tổng dung lượng truyền khoảng 140 MB.
+
+### Chất lượng 198 sản phẩm crawl được
+
+| Field | Quan sát |
+| --- | --- |
+| `name`, `sku`, `product_type`, `attribute_set`, `price`, `currency`, `gender` | Có ở 198/198 |
+| `gender` | women 109, `false` 55, men 34. `false` chủ yếu là `wedding_ring` (41/55), nên **không** có nghĩa là "kids" |
+| `product_type` | 12 giá trị (wedding_ring 87, ring 53, earring 22, …). Có 1 giá trị placeholder `--_select_--` (92542 "Sonate") |
+| `min_price`/`max_price` | null ở 5/198 (sản phẩm vẫn có `price`) |
+| `collection` | rỗng ở 10/198 (`collection_id` null) |
+| `category_name` | rỗng ở 196/198; có giá trị ở 2 sản phẩm ("Women’s Wedding Rings", "Diamond Earrings") |
+| Bảng option | 9,673 dòng. 350 dòng không có `value_id` (option nhập tự do: engraving). 1,146 dòng không có `part_type` (`radio`, `engraving_*`), khi đó nhận diện bằng `option_type` |
+
+Giới hạn: đây là catalog năm 2026, giá là USD của store `.com` hiện tại. Sample lấy từ pool local, chưa phải danh sách distinct ID từ MongoDB.

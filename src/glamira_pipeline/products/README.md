@@ -74,3 +74,26 @@ git diff --check
 ```
 
 Tests cover ordering, tracking, HTML escaping, empty values, unknown values, distinct stores/products/hosts, malformed URLs, conflicting repeated options, transaction rollback, interruption/resume, changed input rejection, exact limits and MongoDB cursor projection/order. MongoDB cursor tests use mocks; the executed 100K benchmark uses the real local JSON sample. Full-dataset runtime and MongoDB integration performance remain unmeasured.
+
+## Distinct product IDs (MongoDB, read only)
+
+```bash
+# MONGODB_URI points at the SSH-tunnelled loopback server with a read-only user.
+uv run list-product-ids --explain --output-dir data/product_ids/full   # query plan only
+uv run list-product-ids --output-dir data/product_ids/full
+```
+
+One aggregation scans `countly.summary` once and groups `product_id`, `viewing_product_id` and `cart_products[].product_id` by their string form. Only grouped rows cross the network. Outputs are `product_ids.jsonl` (one row per ID with reference counts per field and BSON types) and `summary.json` (distinct count, query seconds, source identity). There are no source writes or new indexes. Rerunning replaces outputs atomically.
+
+## react_data crawl
+
+```bash
+uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
+  --output-dir data/product_crawl/full --delay 1 [--jitter 1] [--raw-dir data/product_crawl/raw]
+```
+
+- **Store order:** stores are tried in the priority order of `stores.py` (English storefronts, USD → EUR → GBP → …). The next store is tried only on `404 Product not found`, up to `--max-stores` (default 3).
+- **Stopping:** any 401/403/429 or non-JSON page stops the run with exit code 3; 3 consecutive network errors also stop it. Nothing is retried automatically.
+- **Pacing:** `--delay` (minimum 0.5 s) plus `--jitter` random seconds precede every request.
+- **Outputs:** `crawl.sqlite3` is the checkpoint. Rerunning skips IDs already `ok` or `not_found`, so resume is idempotent. Each run exports `products.jsonl` (all price fields, `gender` as served) and `option_values.jsonl` (`value_id` → `value_sku`/titles, for reference). Per-run metrics are appended to `runs.jsonl`.
+- **Raw JSON:** saved (gzip) only with `--raw-dir`.

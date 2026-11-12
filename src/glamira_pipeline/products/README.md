@@ -85,15 +85,44 @@ uv run list-product-ids --output-dir data/product_ids/full
 
 One aggregation scans `countly.summary` once and groups `product_id`, `viewing_product_id` and `cart_products[].product_id` by their string form. Only grouped rows cross the network. Outputs are `product_ids.jsonl` (one row per ID with reference counts per field and BSON types) and `summary.json` (distinct count, query seconds, source identity). There are no source writes or new indexes. Rerunning replaces outputs atomically.
 
-## react_data crawl
+## react_data crawl into MongoDB
 
 ```bash
+# MONGODB_URI points at the SSH-tunnelled server with write access to the new collections.
+uv run setup-product-collections                 # once; idempotent
 uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
-  --output-dir data/product_crawl/full --delay 1 [--jitter 1] [--raw-dir data/product_crawl/raw]
+  --delay 0.125 --concurrency 8 [--jitter 0.1] [--limit 50] [--raw-dir data/product_crawl/raw]
 ```
 
-- **Store order:** stores are tried in the priority order of `stores.py` (English storefronts, USD → EUR → GBP → …). The next store is tried only on `404 Product not found`, up to `--max-stores` (default 3).
-- **Stopping:** any 401/403/429 or non-JSON page stops the run with exit code 3; 3 consecutive network errors also stop it. Nothing is retried automatically.
+- **Collections:** `setup-product-collections` creates (or re-applies) `countly.products` and `countly.product_option_values`, each with a strict `$jsonSchema` validator, plus indexes `products.status` and `product_option_values.product_id`. Source collections are never modified and nothing is dropped. `crawl-products` refuses to start if the validators are missing or outdated.
+- **Checkpoint = data:** a product is finished when its `products` document has `status` `success` or `not_found`, or `error` after `--max-attempts` (3) attempts. Each run crawls `input IDs − finished IDs`; input order is irrelevant. `--limit N` takes the first N input IDs *before* skipping finished ones, so reruns of one command converge to the same set.
+- **Idempotency:** writes are upserts on fixed `_id`s, in batches of `--batch-size` (200) or every 30 s. `attempts` is computed from the previous document and *set* (not incremented), so replaying a batch after a partial failure gives identical documents. A crash loses at most the unflushed batch, which the next run recrawls.
+- **Stores:** stores are tried in `stores.py` order (English storefronts, USD → EUR → GBP → …). The next store is tried only on 404, up to `--max-stores` (3).
+- **Stopping:**
+  - 401/403/429 or a non-JSON page records `blocked` (not counted as an attempt), flushes and stops with exit 3; 3 consecutive network errors also stop the run.
+  - Ctrl+C/SIGTERM stops gracefully: in-flight requests finish and the batch is flushed. A second signal more than 2 s later aborts.
 - **Pacing:** request starts are spaced by `--delay` (minimum 0.125 s, so at most 8 req/s) plus up to `--jitter` random seconds. `--concurrency` (1–8) sets how many products are in flight.
-- **Outputs:** `crawl.sqlite3` is the checkpoint. Rerunning skips IDs already `ok` or `not_found`, so resume is idempotent. Each run exports `products.jsonl` (all price fields, `gender` as served) and `option_values.jsonl` (`value_id` → `value_sku`/titles, for reference). Per-run metrics are appended to `runs.jsonl`.
-- **Raw JSON:** saved (gzip) only with `--raw-dir`.
+- **Runs:** each run is a document in the existing `countly.enrichment_runs` with `type: "product_crawl"`, `_id = run_id`, `status` (`running`/`completed`/`stopped`/`failed`/`abandoned`), params, input file name and SHA-256, git SHA, heartbeat, progress and metrics. A second crawl is refused while a run has a heartbeat younger than 120 s; older `running` runs are marked `abandoned`.
+- **Raw JSON** is saved (gzip) to files only with `--raw-dir`.
+
+### `products` (one document per product ID)
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `_id`, `product_id` | string | Same form as event `product_id` |
+| `status` | `success` \| `not_found` \| `error` \| `blocked` | |
+| `status_code` | int \| null | HTTP status; null on network errors |
+| `attempts`, `error` | int, string \| null | |
+| `name`, `sku`, `product_type`, `product_type_value`, `attribute_set`, `type_id`, `collection`, `collection_id`, `category_name`, `currency`, `*_format` | string \| null | As served |
+| `attribute_set_id`, `category` | int \| string \| null | `category` is usually `0`; mixed types observed |
+| `gender` | string \| `false` \| null | `false` is kept as served (mostly wedding rings) |
+| `price`, `min_price`, `max_price`, `full_price`, `sale_price` | Decimal128 \| null | Store currency, tax included |
+| `include_tax`, `use_gold_price`, `default_tax`, `current_tax`, `option_count` | bool / number | |
+| `source` | `{host, store_code, url, requested_currency}` | Store that served the data |
+| `run_id`, `crawled_at` | string, date (UTC) | |
+
+Data fields are null unless `status == "success"`. For BigQuery, Decimal128 maps to `NUMERIC`. `gender` mixes string and boolean, so its representation must be chosen at export or staging time.
+
+### `product_option_values` (reference only)
+
+`_id = {product_id, option_id, value_id}`. One row per option value, mapping the event `value_id` to the URL token (`value_sku`) and labels (`value_title`, `value_default_title`, `value_store_title`), with `part_type`, `option_type`, `is_default`, `value_price` (Decimal128) and `price_type`. Options without values (free-text engraving) have `value_id = null`. IDs are strings; cart events store them as ints. Rows of a product that disappear from the site are removed when that product is recrawled successfully.

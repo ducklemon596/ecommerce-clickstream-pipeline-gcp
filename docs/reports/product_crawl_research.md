@@ -283,3 +283,23 @@ Tốc độ thực tế = min(1 / delay, concurrency / latency). Ở 0.25 s vớ
 - CLI giờ cho phép `--delay ≥ 0.125 s` (≤ 8 req/s) và `--concurrency ≤ 8`.
 - **Chưa kiểm chứng:** lô chỉ kéo dài khoảng 2 phút.
 - Một lần chạy thử 8 luồng ở 0.25 s (`conc_8`) bị dừng giữa chừng sau 139 request, tất cả đều ok hoặc not_found.
+
+### Ghi vào MongoDB và kiểm chứng checkpoint (13/11/2026)
+
+Pipeline giờ ghi thẳng vào `countly.products` và `countly.product_option_values` (có validator `$jsonSchema` strict), và ghi run vào `countly.enrichment_runs` (`type: "product_crawl"`). Thiết kế: xem `src/glamira_pipeline/products/README.md`.
+
+| Kiểm chứng | Kết quả |
+| --- | --- |
+| `setup-product-collections` chạy 2 lần | Lần 1 tạo collection, validator, index; lần 2 chỉ áp lại validator, không đổi gì |
+| 50 ID (`--delay 0.125 --concurrency 8 --batch-size 20`) | 50 success; giá `decimal` 50/50; 4,473 dòng option; run `completed` |
+| Ngắt bằng SIGINT qua `uv run` rồi chạy lại | Run `stopped` với `interrupted (SIGINT)` và progress; lần chạy sau chỉ crawl phần còn lại; chạy thêm lần nữa thì 0 request |
+| Sau 450 ID qua nhiều lần ngắt | 450 document, `_id` duy nhất, `attempts = 1` ở 450/450; 440 success, 10 not_found; 22,576 dòng option cho đúng 440 sản phẩm |
+| Chạy 2 crawl cùng lúc | Run thứ hai bị từ chối, không tạo document run; run đầu chạy xong |
+| Document IP có sẵn trong `enrichment_runs` | Không bị đụng tới (vẫn 1 document không có `type`) |
+
+Đã sửa 2 lỗi phát hiện trong lúc kiểm chứng:
+
+1. **SIGINT khi đang `bulk_write`** khiến batch bị ghi lặp, và `$inc attempts` đếm 2 lần (20 document). Giờ crawler tự tính `attempts` và ghi bằng `$set`, nên ghi lặp không đổi kết quả; 20 document test đã được sửa về `attempts = 1`.
+2. **`uv run` chuyển tiếp Ctrl+C**, nên process nhận 2 tín hiệu gần như cùng lúc. Giờ crawler bỏ qua tín hiệu lặp trong vòng 2 s.
+
+Hiện có 520 sản phẩm trong `countly.products` từ các lần kiểm chứng. Crawl full sẽ chạy tiếp từ đó.

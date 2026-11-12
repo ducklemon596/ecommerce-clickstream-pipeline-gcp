@@ -320,3 +320,39 @@ Lệnh: `crawl-products --ids-file data/product_ids/full/product_ids.jsonl --del
 - **Không vượt challenge:** không đi theo `bm-verify`, không chạy JS, không giả trình duyệt, không đổi IP.
 - **Bối cảnh:** trong khoảng 1.5 giờ trước đó, cùng IP đã gửi khoảng 5,600 request qua các lô test (khoảng 1,000 request mỗi lô ở 2, 4 và 8 req/s; 520 lần kiểm chứng; cộng run này). Các lô ngắn trước đó không bị chặn. Nhiều khả năng Akamai đánh giá theo tổng khối lượng hoặc tốc độ kéo dài từ một IP, không phải theo từng request riêng lẻ. **Chưa kiểm chứng.**
 - **Trạng thái dữ liệu:** checkpoint hoạt động đúng. 2 ID `blocked` có `attempts = 0` và sẽ được crawl lại; còn 17,515 ID chưa crawl.
+
+### Crawl full lần 2: hoàn tất ở khoảng 4 req/s (13/11/2026)
+
+Lệnh: `crawl-products --ids-file data/product_ids/full/product_ids.jsonl --delay 0.2 --jitter 0.1 --concurrency 6 --batch-size 200 --block-retries 3 --block-wait 300`. Lệnh được chạy sau lần 1 khoảng 10 phút.
+
+- Mỗi request bắt đầu cách nhau 0.2–0.3 s, trung bình khoảng 4 req/s.
+- Nếu bị chặn, lệnh chờ 5, 10 rồi 20 phút, tối đa 3 lần.
+- Lần này **không bị chặn**, nên không cần retry.
+- Run: `7cbaed7974dc4ca798e6db8eb636dcdb`, `completed`.
+
+| Chỉ số | Giá trị |
+| --- | ---: |
+| Thời gian chạy | 4,818 s (80.3 phút) |
+| Request | 18,329 (17,108 ok, 1,221 not_found; 0 blocked, 0 error) |
+| Tốc độ | 3.80 req/s; latency p50 / p95 0.55 / 0.89 s |
+| Dữ liệu tải về (gzip) | 188.4 MB |
+| ID xử lý trong run | 17,515 (gồm 2 ID `blocked` của lần 1), gồm 17,108 success và 407 not_found |
+
+**Kiểm chứng trong MongoDB sau run:**
+
+| Kiểm tra | Kết quả |
+| --- | --- |
+| `countly.products` | 19,557 document, khớp đủ 19,557 ID input (thiếu 0) |
+| Trạng thái | 19,121 `success`/200 và 436 `not_found`/404. Tất cả có `attempts = 1`; không còn `blocked` hay `error` |
+| Store | Cả 19,121 sản phẩm success đều lấy từ `www.glamira.com` (USD). 436 ID not_found đã thử đủ 3 store (`.com`, `.africa`, `.ie`) |
+| `product_option_values` | 923,294 dòng, mỗi dòng là một (product, option, value), trong đó 34,671 option không có value. Có 170,256 cặp (product, option), bằng đúng tổng `option_count` |
+| Sản phẩm có option | 18,965, cộng 156 sản phẩm có `option_count = 0`, bằng đúng 19,121 |
+| Option của sản phẩm không success | 0 |
+| Kiểu dữ liệu | `price` có 19,120 giá trị `decimal` và 1 `null`: ID 101993 "Deposit", `type_id: deposit`, `full_price = 0`. `gender` có 14,324 giá trị string và 4,797 giá trị bool (`false`) |
+| `name` null trong sản phẩm success | 0 |
+| Dung lượng lưu trữ | `products` 3.9 MB, `product_option_values` 73.0 MB |
+| Document IP trong `enrichment_runs` | Vẫn còn 1, không bị đụng tới |
+
+**Nhận xét:** ở khoảng 3.8 req/s, Akamai không challenge trong suốt 80 phút liên tục (18K request). Lần 1 chạy 7.4 req/s và bị challenge sau khoảng 1,500 request, nhưng trước đó đã có các lô test.
+
+Từ hai lần chạy này **chưa thể tách riêng** ảnh hưởng của tốc độ với ảnh hưởng của khoảng nghỉ 10 phút. Vì vậy 4 req/s chỉ là mức đã quan sát là ổn, chưa phải giới hạn đã xác định.

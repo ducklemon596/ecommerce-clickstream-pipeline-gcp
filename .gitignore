@@ -22,3 +22,6 @@ glamira_ubl_oct2019_nov2019.tar.gz
 *.BIN
 Specification.md
 AGENTS.md
+
+# Local specifications (kept out of version control)
+/docs/specifications/

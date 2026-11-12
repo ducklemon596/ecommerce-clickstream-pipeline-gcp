@@ -1,11 +1,11 @@
-"""Resumable, paced crawl of ``react_data`` into a SQLite checkpoint and JSONL.
+"""Paced, concurrent crawl of ``react_data`` with batched, idempotent writes.
 
-Each product is requested from the first store in priority order and falls
-back to the next store only on ``404 Product not found``. Requests run
-concurrently up to a limit, with request starts paced. A ``blocked``
-response stops the run immediately (no retry, no store switching); repeated
-network errors also stop it. Finished products (``ok`` or ``not_found`` on
-every tried store) are skipped on rerun, so resuming is safe and idempotent.
+The written data is the checkpoint: finished IDs come from the store, and a run
+crawls ``input IDs − finished IDs`` in input order (no sorting needed). Each
+product is requested from the first store in priority order and falls back to
+the next only on ``404 Product not found``. A ``blocked`` response stops new
+requests at once; buffered results are always flushed before returning, so at
+most the requests still in flight are repeated by the next run.
 """
 from __future__ import annotations
 
@@ -19,25 +19,38 @@ import logging
 import os
 from pathlib import Path
 import random
-import sqlite3
+import signal
 import statistics
 import time
+from typing import Protocol
 
 from glamira_pipeline.products.http_client import FetchResult, fetch, react_data_url
-from glamira_pipeline.products.react_data import parse_option_values, parse_product
+from glamira_pipeline.products.mongo_store import BatchItem
+from glamira_pipeline.products.react_data import option_value_documents, product_document
 from glamira_pipeline.products.stores import STORES, Store
 
 LOGGER = logging.getLogger(__name__)
-FINAL_STATUSES = ("ok", "not_found")
+STATUS_NAMES = {"ok": "success", "not_found": "not_found", "error": "error", "blocked": "blocked"}
 
 
 class CrawlStopped(RuntimeError):
     """The site signalled a block or the network failed repeatedly.
 
-    ``metrics`` holds the run metrics up to the stop.
+    ``metrics`` and ``progress`` describe the run up to the stop.
     """
 
     metrics: dict = {}
+    progress: dict = {}
+
+
+class CrawlStore(Protocol):
+    """Checkpoint and sink used by the crawler (see ``MongoProductStore``)."""
+
+    run_id: str
+
+    def load_checkpoint(self, max_attempts: int) -> tuple[set[str], dict[str, int]]: ...
+    def write_batch(self, items: Sequence[BatchItem]) -> None: ...
+    def heartbeat(self, progress: dict, metrics: dict | None = None) -> None: ...
 
 
 def read_product_ids(path: Path) -> list[str]:
@@ -52,72 +65,11 @@ def read_product_ids(path: Path) -> list[str]:
     return list(seen)
 
 
-def select_ids(ids: Sequence[str], *, sample: int | None, seed: int | None, limit: int | None) -> list[str]:
-    """Optionally draw a seeded random sample, then cap with ``limit``."""
-    chosen = list(ids)
-    if sample is not None:
-        chosen = random.Random(seed).sample(chosen, min(sample, len(chosen)))
-    return chosen[:limit] if limit is not None else chosen
-
-
-def open_checkpoint(path: Path) -> sqlite3.Connection:
-    """Open or create the crawl checkpoint (one writer)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS products(
-            product_id TEXT PRIMARY KEY, status TEXT NOT NULL, host TEXT,
-            record TEXT, crawled_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS option_values(
-            product_id TEXT NOT NULL, option_id TEXT NOT NULL, value_key TEXT NOT NULL,
-            record TEXT NOT NULL, PRIMARY KEY(product_id, option_id, value_key));
-        CREATE TABLE IF NOT EXISTS attempts(
-            id INTEGER PRIMARY KEY, product_id TEXT, host TEXT, status TEXT, http_status INTEGER,
-            elapsed_s REAL, response_bytes INTEGER, error TEXT, attempted_at TEXT);
-    """)
-    return connection
-
-
-def finished_ids(connection: sqlite3.Connection) -> set[str]:
-    rows = connection.execute("SELECT product_id FROM products WHERE status IN (?, ?)", FINAL_STATUSES)
-    return {row[0] for row in rows}
-
-
-def _record_attempt(connection: sqlite3.Connection, product_id: str, store: Store, result: FetchResult) -> None:
-    connection.execute("INSERT INTO attempts(product_id,host,status,http_status,elapsed_s,response_bytes,error,attempted_at)"
-                       " VALUES(?,?,?,?,?,?,?,?)",
-                       (product_id, store.host, result.status, result.http_status, result.elapsed_s,
-                        result.response_bytes, result.error, datetime.now(timezone.utc).isoformat()))
-
-
-def _save_product(connection: sqlite3.Connection, product_id: str, store: Store, result: FetchResult) -> None:
-    """Replace the product and its option rows atomically (caller's transaction)."""
-    record = parse_product(result.payload, host=store.host, requested_currency=store.currency)
-    if record["product_id"] != product_id:
-        raise ValueError(f"payload product_id {record['product_id']} != requested {product_id}")
-    now = datetime.now(timezone.utc).isoformat()
-    record["crawled_at"] = now
-    connection.execute("INSERT OR REPLACE INTO products VALUES(?,?,?,?,?)",
-                       (product_id, "ok", store.host, json.dumps(record, ensure_ascii=False), now))
-    connection.execute("DELETE FROM option_values WHERE product_id=?", (product_id,))
-    connection.executemany("INSERT OR REPLACE INTO option_values VALUES(?,?,?,?)", [
-        (product_id, str(row["option_id"]), "" if row["value_id"] is None else str(row["value_id"]),
-         json.dumps(row, ensure_ascii=False)) for row in parse_option_values(result.payload)])
-
-
-def _write_raw(raw_dir: Path, product_id: str, store: Store, body: bytes) -> None:
-    target = raw_dir / store.host / f"{product_id}.json.gz"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_bytes(gzip.compress(body))
-    os.replace(temporary, target)
-
-
 class _Pacer:
     """Space request *starts* by ``delay + uniform(0, jitter)`` seconds.
 
-    Starts are serialized, so ``delay_s`` bounds the request rate (0.5 s means
-    at most 2 starts per second) however many requests are in flight.
+    Starts are serialized, so ``delay_s`` bounds the request rate however many
+    requests are in flight.
     """
 
     def __init__(self, delay_s: float, jitter_s: float, rng: random.Random,
@@ -134,99 +86,185 @@ class _Pacer:
             self._next = self._clock() + self._delay + self._rng.uniform(0, self._jitter)
 
 
-def crawl(connection: sqlite3.Connection, product_ids: Iterable[str], *,
-          stores: Sequence[Store] = STORES, max_stores: int = 3, delay_s: float = 3.0,
-          jitter_s: float = 0.0, concurrency: int = 1, max_consecutive_errors: int = 3,
-          raw_dir: Path | None = None, fetcher: Callable[[str], FetchResult] = fetch,
+def _write_raw(raw_dir: Path, product_id: str, store: Store, body: bytes) -> None:
+    target = raw_dir / store.host / f"{product_id}.json.gz"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_bytes(gzip.compress(body))
+    os.replace(temporary, target)
+
+
+def _batch_item(product_id: str, store: Store, result: FetchResult, run_id: str, previous_attempts: int) -> BatchItem:
+    """Convert one final fetch result into documents; unparseable data becomes ``error``.
+
+    A ``blocked`` result is not the product's fault, so it does not count as an attempt.
+    """
+    now = datetime.now(timezone.utc)
+    status = STATUS_NAMES[result.status]
+    source = {"host": store.host, "store_code": store.store_code, "url": result.url,
+              "requested_currency": store.currency}
+    common = dict(product_id=product_id, status_code=result.http_status, source=source,
+                  run_id=run_id, crawled_at=now)
+    try:
+        if status == "success":
+            item = BatchItem(product_document(status=status, payload=result.payload, **common),
+                             option_value_documents(result.payload, run_id=run_id, crawled_at=now))
+        else:
+            item = BatchItem(product_document(status=status, payload=None, error=result.error, **common))
+    except (ValueError, TypeError, KeyError) as exc:
+        LOGGER.warning("id %s: unparseable payload (%s)", product_id, exc)
+        item = BatchItem(product_document(status="error", payload=None, error=f"parse error: {exc}", **common))
+    item.product["attempts"] = previous_attempts + (item.product["status"] != "blocked")
+    return item
+
+
+def crawl(store_sink: CrawlStore, product_ids: Iterable[str], *, stores: Sequence[Store] = STORES,
+          max_stores: int = 3, delay_s: float = 3.0, jitter_s: float = 0.0, concurrency: int = 1,
+          batch_size: int = 200, flush_interval_s: float = 30.0, max_attempts: int = 3,
+          max_consecutive_errors: int = 3, limit: int | None = None, raw_dir: Path | None = None,
+          fetcher: Callable[[str], FetchResult] = fetch,
           sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
           clock: Callable[[], float] = time.monotonic, rng: random.Random | None = None) -> dict:
-    """Crawl unfinished IDs; return per-run metrics. Raises ``CrawlStopped`` on a block.
+    """Crawl unfinished IDs and return ``{"metrics", "progress"}``; raise ``CrawlStopped`` on a block.
 
-    Up to ``concurrency`` products are in flight; request starts are paced by
-    ``delay_s + uniform(0, jitter_s)``. A block or repeated errors stop new
-    requests at once; in-flight responses are still recorded. SQLite is used
-    only from the event-loop thread. Metrics cover this invocation only.
+    ``limit`` takes the first N input IDs *before* removing finished ones, so
+    the same command converges to the same set. Batches flush on ``batch_size``
+    items or ``flush_interval_s`` seconds, and always before returning.
     """
-    return asyncio.run(_crawl(connection, product_ids, stores=stores, max_stores=max_stores,
-                              delay_s=delay_s, jitter_s=jitter_s, concurrency=concurrency,
-                              max_consecutive_errors=max_consecutive_errors, raw_dir=raw_dir,
-                              fetcher=fetcher, sleep=sleep, clock=clock, rng=rng or random.Random()))
+    if concurrency < 1 or batch_size < 1:
+        raise ValueError("concurrency and batch_size must be at least 1")
+    selected = list(product_ids)[:limit] if limit is not None else list(product_ids)
+    done, attempts = store_sink.load_checkpoint(max_attempts)
+    pending = [product_id for product_id in selected if product_id not in done]
+    try:
+        return asyncio.run(_crawl(store_sink, selected, pending, len(selected) - len(pending), attempts, stores=stores,
+                                  max_stores=max_stores, delay_s=delay_s, jitter_s=jitter_s,
+                                  concurrency=concurrency, batch_size=batch_size,
+                                  flush_interval_s=flush_interval_s, max_consecutive_errors=max_consecutive_errors,
+                                  raw_dir=raw_dir, fetcher=fetcher, sleep=sleep, clock=clock,
+                                  rng=rng or random.Random()))
+    except asyncio.CancelledError:
+        raise KeyboardInterrupt from None  # forced abort after a repeated signal
 
 
-async def _crawl(connection, product_ids, *, stores, max_stores, delay_s, jitter_s, concurrency,
-                 max_consecutive_errors, raw_dir, fetcher, sleep, clock, rng) -> dict:
-    if concurrency < 1:
-        raise ValueError("concurrency must be at least 1")
-    done = finished_ids(connection)
+async def _crawl(sink, selected, pending, already_finished, previous_attempts, *, stores, max_stores, delay_s, jitter_s,
+                 concurrency, batch_size, flush_interval_s, max_consecutive_errors, raw_dir,
+                 fetcher, sleep, clock, rng) -> dict:
     pacer = _Pacer(delay_s, jitter_s, rng, sleep, clock)
-    pending = iter(product_ids)
+    queue = iter(pending)
     results: list[FetchResult] = []
     outcome: Counter = Counter()
-    state = {"consecutive_errors": 0, "stop_reason": None}
+    buffer: list[BatchItem] = []
+    state = {"consecutive_errors": 0, "stop_reason": None, "last_flush": time.monotonic(), "written": 0}
     started = time.monotonic()
+
+    def progress() -> dict:
+        return {"selected": len(selected), "already_finished": already_finished,
+                "pending_at_start": len(pending), "written_this_run": state["written"]}
+
+    def metrics() -> dict:
+        data = run_metrics(results, time.monotonic() - started)
+        data.update(outcome, stop_reason=state["stop_reason"])
+        return data
+
+    def flush() -> None:
+        # Synchronous on purpose: it also runs from ``finally`` during cancellation.
+        if not buffer:
+            return
+        batch = buffer[:]
+        sink.write_batch(batch)
+        del buffer[:len(batch)]
+        state["written"] += len(batch)
+        state["last_flush"] = time.monotonic()
+        sink.heartbeat(progress(), metrics())
 
     def stop(reason: str) -> None:
         state["stop_reason"] = state["stop_reason"] or reason
 
     async def handle(product_id: str) -> None:
-        final = None
+        final: tuple[Store, FetchResult] | None = None
         for store in stores[:max_stores]:
             await pacer.wait()
             if state["stop_reason"]:
-                return  # leave the ID unfinished for the next run
+                return  # left unfinished for the next run
             result = await asyncio.to_thread(fetcher, react_data_url(store.host, product_id, store.currency))
             results.append(result)
-            with connection:
-                _record_attempt(connection, product_id, store, result)
-                if result.status == "ok":
-                    _save_product(connection, product_id, store, result)
+            final = (store, result)
             if result.status == "blocked":
                 stop(f"blocked (HTTP {result.http_status}) at {store.host} id {product_id}")
-                return
+                break
             if result.status == "error":
                 state["consecutive_errors"] += 1
                 LOGGER.warning("error %s id %s: %s", store.host, product_id, result.error or result.http_status)
                 if state["consecutive_errors"] >= max_consecutive_errors:
                     stop(f"{state['consecutive_errors']} consecutive errors")
-                final = "error"
-                break  # retry this ID on the next run, not on another store
+                break  # retried by a later run, not on another store
             state["consecutive_errors"] = 0
-            final = result.status
             if result.status == "ok":
                 if raw_dir is not None:
                     _write_raw(raw_dir, product_id, store, result.raw)
                 break
-        if final == "not_found":
-            with connection:
-                connection.execute("INSERT OR REPLACE INTO products VALUES(?,?,?,?,?)",
-                                   (product_id, "not_found", None, None, datetime.now(timezone.utc).isoformat()))
-        outcome[f"products_{final}"] += 1
-        LOGGER.info("id %s -> %s", product_id, final)
+        if final is None:
+            return
+        store, result = final
+        item = _batch_item(product_id, store, result, sink.run_id, previous_attempts.get(product_id, 0))
+        buffer.append(item)
+        outcome[f"products_{item.product['status']}"] += 1
+        LOGGER.info("id %s -> %s", product_id, item.product["status"])
+        if len(buffer) >= batch_size or time.monotonic() - state["last_flush"] >= flush_interval_s:
+            flush()
 
     async def worker() -> None:
         while not state["stop_reason"]:
-            product_id = next(pending, None)
+            product_id = next(queue, None)
             if product_id is None:
                 return
-            if product_id in done:
-                outcome["skipped_finished"] += 1
-                continue
             await handle(product_id)
 
-    await asyncio.gather(*(worker() for _ in range(concurrency)))
-    metrics = run_metrics(results, time.monotonic() - started)
-    metrics.update(outcome, stop_reason=state["stop_reason"], delay_s=delay_s, jitter_s=jitter_s,
-                   max_stores=max_stores, concurrency=concurrency)
+    loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+    handled = []
+    first_signal: list[float] = []
+
+    def on_signal(signum: int) -> None:
+        """First signal: stop gracefully (finish in-flight, flush). A repeat >2 s later aborts.
+
+        Repeats within 2 s are ignored because ``uv run`` and the terminal can
+        both deliver one Ctrl+C to the process.
+        """
+        name = signal.Signals(signum).name
+        if not first_signal:
+            first_signal.append(time.monotonic())
+            stop(f"interrupted ({name})")
+            LOGGER.warning("%s received: finishing in-flight requests; repeat to abort", name)
+        elif time.monotonic() - first_signal[0] > 2:
+            LOGGER.warning("%s received again: aborting without waiting", name)
+            main_task.cancel()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, on_signal, signum)
+            handled.append(signum)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass  # e.g. not on the main thread or not supported on this platform
+    try:
+        await asyncio.gather(*(worker() for _ in range(concurrency)))
+    finally:
+        for signum in handled:
+            loop.remove_signal_handler(signum)
+        flush()
+    report = {"metrics": metrics(), "progress": progress()}
     if state["stop_reason"]:
         exc = CrawlStopped(state["stop_reason"])
-        exc.metrics = metrics
+        exc.metrics, exc.progress = report["metrics"], report["progress"]
         raise exc
-    return metrics
+    return report
 
 
 def run_metrics(results: Sequence[FetchResult], wall_s: float) -> dict:
     """Summarize request outcomes, latency and throughput for one invocation."""
     latencies = sorted(r.elapsed_s for r in results)
+
     def pct(q: float) -> float | None:
         return round(latencies[min(len(latencies) - 1, int(q * len(latencies)))], 3) if latencies else None
     return {"requests": len(results), "wall_seconds": round(wall_s, 2),
@@ -235,26 +273,3 @@ def run_metrics(results: Sequence[FetchResult], wall_s: float) -> dict:
             "latency_mean_s": round(statistics.fmean(latencies), 3) if latencies else None,
             "response_bytes_total": sum(r.response_bytes for r in results),
             "request_statuses": dict(Counter(r.status for r in results))}
-
-
-def export(connection: sqlite3.Connection, output_dir: Path) -> dict:
-    """Write ``products.jsonl`` and ``option_values.jsonl`` atomically; return row counts."""
-    counts = {}
-    queries = {"products.jsonl": "SELECT record FROM products WHERE status='ok' ORDER BY CAST(product_id AS INTEGER)",
-               "option_values.jsonl": "SELECT record FROM option_values ORDER BY CAST(product_id AS INTEGER), option_id, value_key"}
-    for name, query in queries.items():
-        target = output_dir / name
-        temporary = target.with_suffix(".jsonl.tmp")
-        rows = 0
-        try:
-            with temporary.open("w", encoding="utf-8") as stream:
-                for (record,) in connection.execute(query):
-                    stream.write(record + "\n")
-                    rows += 1
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        counts[name.removesuffix(".jsonl") + "_rows"] = rows
-    counts["products_not_found"] = connection.execute(
-        "SELECT COUNT(*) FROM products WHERE status='not_found'").fetchone()[0]
-    return counts

@@ -1,17 +1,20 @@
 """Product CLIs: configuration deduplication, distinct IDs and react_data crawl."""
 import argparse
-from datetime import datetime, timezone
 import json
 import logging
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 from glamira_pipeline.products.catalog_ids import aggregation_pipeline, run_distinct
-from glamira_pipeline.products.crawl import CrawlStopped, crawl, export, open_checkpoint, read_product_ids, select_ids
+from glamira_pipeline.products.crawl import CrawlStopped, crawl, read_product_ids
+from glamira_pipeline.products.mongo_store import (MongoProductStore, ensure_collections, finish_run,
+                                                    has_validators, start_run)
 from glamira_pipeline.products.pipeline import run_deduplication
+from glamira_pipeline.products.source import json_identity
 from glamira_pipeline.products.stores import STORES
 
 # Hard rate ceiling for react_data requests: at most 8 request starts per second.
@@ -80,19 +83,40 @@ def list_ids_main() -> None:
     print(f"Outputs: {args.output_dir}")
 
 
+def setup_collections_main() -> None:
+    """Create the product collections with schema validators and indexes (idempotent)."""
+    parser = argparse.ArgumentParser(description=setup_collections_main.__doc__)
+    parser.add_argument("--database", default="countly")
+    args = parser.parse_args()
+    try:
+        with _mongo_client(parser) as client:
+            for action in ensure_collections(client[args.database]):
+                print(action)
+    except PyMongoError as exc:
+        parser.exit(1, f"Collection setup failed ({type(exc).__name__}: {exc}).\n")
+
+
+def _git_sha() -> str | None:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True, cwd=Path(__file__).parent).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def crawl_main() -> None:
-    """Crawl react_data for product IDs with pacing; stop on any block."""
+    """Crawl react_data into MongoDB in idempotent batches; resume skips finished IDs."""
     parser = argparse.ArgumentParser(description=crawl_main.__doc__)
     parser.add_argument("--ids-file", type=Path, required=True, help="JSONL with a product_id field")
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--sample", type=int, help="Seeded random sample size drawn before --limit")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--limit", type=int)
+    parser.add_argument("--database", default="countly")
+    parser.add_argument("--limit", type=int, help="Use only the first N input IDs (before skipping finished)")
     parser.add_argument("--delay", type=float, default=3.0, help="Minimum seconds between request starts")
-    parser.add_argument("--concurrency", type=int, default=1, help="Products in flight (1-8)")
     parser.add_argument("--jitter", type=float, default=0.0, help="Extra uniform random seconds")
+    parser.add_argument("--concurrency", type=int, default=1, help="Products in flight (1-8)")
     parser.add_argument("--max-stores", type=int, default=3, help="Stores tried on 404, in priority order")
-    parser.add_argument("--raw-dir", type=Path, help="Also save raw JSON (gzip); off by default")
+    parser.add_argument("--batch-size", type=int, default=200, help="Products per MongoDB write")
+    parser.add_argument("--max-attempts", type=int, default=3, help="Error attempts before an ID is skipped")
+    parser.add_argument("--raw-dir", type=Path, help="Also save raw JSON (gzip) to files; off by default")
     args = parser.parse_args()
     if args.delay < MIN_DELAY_S:
         parser.error(f"--delay below {MIN_DELAY_S}s is not allowed (max {1 / MIN_DELAY_S:.0f} requests/second)")
@@ -100,26 +124,45 @@ def crawl_main() -> None:
         parser.error("--concurrency must be 1..8")
     if not 1 <= args.max_stores <= len(STORES):
         parser.error(f"--max-stores must be 1..{len(STORES)}")
+    if args.batch_size < 1 or args.max_attempts < 1 or (args.limit is not None and args.limit < 1):
+        parser.error("--batch-size, --max-attempts and --limit must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    connection = open_checkpoint(args.output_dir / "crawl.sqlite3")
-    exit_code, stopped = 0, None
+    params = {key: getattr(args, key) for key in
+              ("limit", "delay", "jitter", "concurrency", "max_stores", "batch_size", "max_attempts")}
     try:
-        ids = select_ids(read_product_ids(args.ids_file), sample=args.sample, seed=args.seed, limit=args.limit)
-        try:
-            metrics = crawl(connection, ids, max_stores=args.max_stores, delay_s=args.delay, concurrency=args.concurrency,
-                            jitter_s=args.jitter, raw_dir=args.raw_dir)
-        except CrawlStopped as exc:
-            metrics, stopped, exit_code = exc.metrics, str(exc), 3
-        metrics.update(export(connection, args.output_dir), selected_ids=len(ids), sample=args.sample,
-                       seed=args.seed if args.sample is not None else None,
-                       finished_at=datetime.now(timezone.utc).isoformat())
-        runs = args.output_dir / "runs.jsonl"
-        with runs.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(metrics) + "\n")
-    except (OSError, ValueError, sqlite3.Error) as exc:
+        ids = read_product_ids(args.ids_file)
+        identity = json_identity(args.ids_file)
+        input_info = {"file": args.ids_file.name, "sha256": identity["sha256"], "ids": len(ids)}
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f"Cannot read --ids-file ({type(exc).__name__}: {exc}).\n")
+    try:
+        with _mongo_client(parser) as client:
+            db = client[args.database]
+            if not has_validators(db):
+                parser.exit(1, "Product collections are missing or outdated; run setup-product-collections.\n")
+            try:
+                run_id = start_run(db, params=params, input_info=input_info, git_sha=_git_sha())
+            except RuntimeError as exc:
+                parser.exit(2, f"Refusing to start: {exc}.\n")
+            print(f"run_id {run_id}")
+            status, report, reason, code = "failed", {}, None, 1
+            try:
+                report = crawl(MongoProductStore(db, run_id), ids, limit=args.limit, delay_s=args.delay,
+                               jitter_s=args.jitter, concurrency=args.concurrency, max_stores=args.max_stores,
+                               batch_size=args.batch_size, max_attempts=args.max_attempts, raw_dir=args.raw_dir)
+                status, code = "completed", 0
+            except CrawlStopped as exc:
+                report, reason, status, code = {"metrics": exc.metrics, "progress": exc.progress}, str(exc), "stopped", 3
+            except KeyboardInterrupt:
+                reason, status, code = "interrupted", "stopped", 130
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                finish_run(db, run_id, status=status, metrics=report.get("metrics"),
+                           progress=report.get("progress"), stop_reason=reason)
+    except PyMongoError as exc:
         parser.exit(1, f"Product crawl failed ({type(exc).__name__}: {exc}).\n")
-    finally:
-        connection.close()
-    print(json.dumps(metrics, indent=2))
-    if stopped:
-        parser.exit(exit_code, f"Stopped: {stopped}. Not retrying.\n")
+    print(json.dumps(report, indent=2, default=str))
+    if code:
+        parser.exit(code, f"Run {status}: {reason}.\n")

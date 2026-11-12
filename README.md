@@ -59,3 +59,13 @@ uv run python -m unittest discover -s tests/unit -v
 The maintained workflow uses an unsorted MongoDB cursor with requested batch size **50K**, an in-memory IP Counter, durable counter output, offline BIN lookup and verified staging publication. SQLite checkpoint and benchmark implementations have been retired.
 
 See the [IP Location README](src/glamira_pipeline/ip_location/README.md) for sample/full commands, schema, recovery limitations and measured comparisons explaining the choice.
+
+## Product configurations
+
+`uv run deduplicate-products` streams JSON or MongoDB events, extracts observed URL configurations from `view_product_detail`, and deduplicates them on disk with SQLite. It retains product ID, store ID and hostname, counts occurrences and exports JSONL. No web crawling or default inference occurs.
+
+The same pass inventories `current_url` across all event types, exporting evidence-backed matches and unverified candidates separately. It never reads `referrer_url`.
+
+See the [product workflow](src/glamira_pipeline/products/README.md) for local/VM commands and recovery rules, and the [100K validation report](docs/reports/product_configuration_deduplication.md) for measured results.
+
+The [product configuration research](analysis/product_configuration_research/README.md) investigates all 27 event types, with measured counterexamples and proposed reconstruction rules awaiting review. It includes selection timing, quality representation, recommendation ownership, and cart-option mapping limitations.

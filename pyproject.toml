@@ -17,6 +17,7 @@ extract-sample = "glamira_pipeline.sampling.extract:main"
 assess-data-quality = "glamira_pipeline.quality.cli:main"
 seed-ip-sample = "glamira_pipeline.ip_location.cli:seed_main"
 enrich-ip-locations = "glamira_pipeline.ip_location.cli:enrich_main"
+deduplicate-products = "glamira_pipeline.products.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

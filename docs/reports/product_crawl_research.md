@@ -223,7 +223,7 @@ Sample là 200 ID ngẫu nhiên (`--sample 200 --seed 7`) từ 12,734 ID có tro
 - **Không bị chặn ở nấc nào**, nên không cần jitter. Mình không tăng quá 0.5 s/1 luồng (≤ 2 req/s) để tôn trọng site.
 - Ở 1 luồng, tốc độ bị giới hạn bởi latency (khoảng 0.9 s), nên thực tế chỉ đạt khoảng 0.74 req/s.
 - Mọi ID tìm thấy đều có ở store ưu tiên số 1 (`.com`). 2 ID (110296, 110328) trả 404 ở cả `.com`, `.africa` và `.ie`.
-- **Ước tính cho 12,734 ID:** khoảng 4.8 giờ ở nấc 4, khoảng 6.4 giờ ở nấc 3; tổng dung lượng truyền khoảng 140 MB.
+- **Ước tính:** với 19,557 distinct ID từ MongoDB (xem [product_ids_distinct](product_ids_distinct.md)), crawl mất khoảng 7.3 giờ ở nấc 4 và khoảng 9.9 giờ ở nấc 3; tổng dung lượng truyền khoảng 215 MB.
 
 ### Chất lượng 198 sản phẩm crawl được
 

@@ -121,6 +121,8 @@ def crawl_main() -> None:
     parser.add_argument("--block-retries", type=int, default=0, help="Resumes after a block (0-3)")
     parser.add_argument("--block-wait", type=float, default=300.0,
                         help="Seconds to wait after the first block; doubles for each retry (min 300)")
+    parser.add_argument("--recheck-not-found", action="store_true",
+                        help="Crawl not_found IDs again (combine with --max-stores to try more stores)")
     args = parser.parse_args()
     if not 0 <= args.block_retries <= 3 or args.block_wait < 300:
         parser.error("--block-retries must be 0..3 and --block-wait at least 300 seconds")
@@ -135,7 +137,7 @@ def crawl_main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     params = {key: getattr(args, key) for key in
               ("limit", "delay", "jitter", "concurrency", "max_stores", "batch_size", "max_attempts",
-               "block_retries", "block_wait")}
+               "block_retries", "block_wait", "recheck_not_found")}
     try:
         ids = read_product_ids(args.ids_file)
         identity = json_identity(args.ids_file)
@@ -180,7 +182,7 @@ def _run_once(db, run_id: str, ids: list[str], args: argparse.Namespace) -> tupl
     """Run one crawl and always record its outcome; return (status, report, reason, exit code)."""
     status, report, reason, code = "failed", {}, None, 1
     try:
-        report = crawl(MongoProductStore(db, run_id), ids, limit=args.limit, delay_s=args.delay,
+        report = crawl(MongoProductStore(db, run_id, recheck_not_found=args.recheck_not_found), ids, limit=args.limit, delay_s=args.delay,
                        jitter_s=args.jitter, concurrency=args.concurrency, max_stores=args.max_stores,
                        batch_size=args.batch_size, max_attempts=args.max_attempts, raw_dir=args.raw_dir)
         status, code = "completed", 0

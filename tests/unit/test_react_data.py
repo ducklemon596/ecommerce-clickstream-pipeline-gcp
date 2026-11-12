@@ -285,6 +285,18 @@ class MongoStoreTests(unittest.TestCase):
         self.assertTrue(all(op._upsert for op in calls[0][2][0] + calls[1][2][0]))
 
 
+    def test_recheck_not_found_reopens_only_not_found(self):
+        rows = [{"_id": "1", "status": "success", "attempts": 1}, {"_id": "2", "status": "not_found", "attempts": 1},
+                {"_id": "3", "status": "error", "attempts": 3}, {"_id": "4", "status": "blocked", "attempts": 0}]
+
+        class Products:
+            def find(self, *args):
+                return [dict(row) for row in rows]
+        db = {"products": Products()}
+        self.assertEqual(MongoProductStore(db, "r").load_checkpoint(3), ({"1", "2", "3"}, {"4": 0}))
+        self.assertEqual(MongoProductStore(db, "r", recheck_not_found=True).load_checkpoint(3),
+                         ({"1", "3"}, {"2": 1, "4": 0}))
+
 
 class BlockWaitTests(unittest.TestCase):
     def test_waits_double_from_the_first(self):

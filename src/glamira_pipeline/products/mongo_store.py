@@ -111,18 +111,21 @@ class BatchItem:
 class MongoProductStore:
     """Checkpoint and sink backed by ``products`` and ``product_option_values``."""
 
-    def __init__(self, db: Database, run_id: str) -> None:
+    def __init__(self, db: Database, run_id: str, *, recheck_not_found: bool = False) -> None:
+        """``recheck_not_found`` treats ``not_found`` as unfinished, so those IDs are crawled again."""
         self.db, self.run_id = db, run_id
+        self.final_statuses = ("success",) if recheck_not_found else FINAL_STATUSES
 
     def load_checkpoint(self, max_attempts: int) -> tuple[set[str], dict[str, int]]:
         """Return finished IDs and the ``attempts`` of every other existing document.
 
-        Finished means a final status, or an error after ``max_attempts`` attempts.
+        Finished means a final status (see ``final_statuses``), or an error
+        after ``max_attempts`` attempts.
         """
         finished, attempts = set(), {}
         for document in self.db[PRODUCTS].find({}, {"status": 1, "attempts": 1}):
             count = document.get("attempts", 0)
-            if document["status"] in FINAL_STATUSES or (document["status"] == "error" and count >= max_attempts):
+            if document["status"] in self.final_statuses or (document["status"] == "error" and count >= max_attempts):
                 finished.add(document["_id"])
             else:
                 attempts[document["_id"]] = count

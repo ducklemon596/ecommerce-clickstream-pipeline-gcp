@@ -285,5 +285,13 @@ class MongoStoreTests(unittest.TestCase):
         self.assertTrue(all(op._upsert for op in calls[0][2][0] + calls[1][2][0]))
 
 
+
+class BlockWaitTests(unittest.TestCase):
+    def test_waits_double_from_the_first(self):
+        from glamira_pipeline.products.cli import block_waits
+        self.assertEqual(block_waits(300, 3), [300, 600, 1200])
+        self.assertEqual(block_waits(300, 0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

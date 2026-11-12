@@ -100,6 +100,7 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 - **Stores:** stores are tried in `stores.py` order (English storefronts, USD → EUR → GBP → …). The next store is tried only on 404, up to `--max-stores` (3).
 - **Stopping:**
   - 401/403/429 or a non-JSON page records `blocked` (not counted as an attempt), flushes and stops with exit 3; 3 consecutive network errors also stop the run.
+  - `--block-retries N` (0–3, default 0) waits and resumes after a block. The waits are `--block-wait` seconds (minimum 300), then double each time (300 → 600 → 1200 s). Each resume is a new run document; a block after the last retry ends the command with exit 3. Clients stay plain and honest: challenges are never solved or bypassed.
   - Ctrl+C/SIGTERM stops gracefully: in-flight requests finish and the batch is flushed. A second signal more than 2 s later aborts.
 - **Pacing:** request starts are spaced by `--delay` (minimum 0.125 s, so at most 8 req/s) plus up to `--jitter` random seconds. `--concurrency` (1–8) sets how many products are in flight.
 - **Runs:** each run is a document in the existing `countly.enrichment_runs` with `type: "product_crawl"`, `_id = run_id`, `status` (`running`/`completed`/`stopped`/`failed`/`abandoned`), params, input file name and SHA-256, git SHA, heartbeat, progress and metrics. A second crawl is refused while a run has a heartbeat younger than 120 s; older `running` runs are marked `abandoned`.

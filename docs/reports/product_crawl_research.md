@@ -256,3 +256,16 @@ Sample là 200 ID ngẫu nhiên từ 19,557 distinct ID trong MongoDB.
 - Bảng option có 9,482 dòng; tổng dung lượng truyền 2.06 MB (khoảng 10 KB mỗi request).
 - **Ước tính crawl toàn bộ 19,557 ID: khoảng 2.7 giờ** ở 2 req/s, thêm khoảng 1.5% request fallback cho các ID 404.
 - Lần chạy chỉ kéo dài khoảng 2 phút; chưa kiểm chứng việc duy trì 2 req/s trong nhiều giờ.
+
+### Độ ổn định: 1,000 ID mỗi lô, 4 request đồng thời
+
+| Lô | `--delay` | Seed | Request | Thời gian | req/s | p50 / p95 latency | Kết quả |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `stability_1000` | 0.5 s | 21 | 1,048 | 527.8 s | 1.99 | 0.55 / 1.11 s | 976 ok, 24 ID not_found, **0 bị chặn hoặc lỗi** |
+| `rate_025` | 0.25 s | 31 | 1,054 | 266.7 s | 3.95 | 0.54 / 0.88 s | 973 ok, 27 ID not_found, **0 bị chặn hoặc lỗi** |
+
+- **Theo từng phút:** ở 0.5 s, mỗi phút đều đạt 1.93–2.02 req/s; ở 0.25 s, mỗi phút đạt 3.87–4.00 req/s. p50 giữ ổn định ở 0.53–0.62 s, không có xu hướng tăng dần.
+- **Không tìm thấy:** 2.4–2.7% ID trả 404 trên cả 3 store đầu.
+- **Ước tính crawl toàn bộ 19,557 ID ở 4 req/s:** khoảng 1.4 giờ, khoảng 20,000 request, khoảng 200 MB truyền.
+- **Giới hạn trên của CLI:** `--delay ≥ 0.25 s` (≤ 4 req/s), tối đa 4 request đồng thời.
+- **Chưa kiểm chứng:** mỗi lô chỉ chạy dưới 9 phút; một lần crawl kéo dài hơn 1 giờ vẫn có thể bị Akamai đánh giá khác.

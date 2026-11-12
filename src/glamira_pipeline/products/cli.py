@@ -14,6 +14,9 @@ from glamira_pipeline.products.crawl import CrawlStopped, crawl, export, open_ch
 from glamira_pipeline.products.pipeline import run_deduplication
 from glamira_pipeline.products.stores import STORES
 
+# Hard rate ceiling for react_data requests: at most 4 request starts per second.
+MIN_DELAY_S = 0.25
+
 
 def main() -> None:
     """Parse source and runtime settings; exit nonzero without logging raw events."""
@@ -91,8 +94,8 @@ def crawl_main() -> None:
     parser.add_argument("--max-stores", type=int, default=3, help="Stores tried on 404, in priority order")
     parser.add_argument("--raw-dir", type=Path, help="Also save raw JSON (gzip); off by default")
     args = parser.parse_args()
-    if args.delay < 0.5:
-        parser.error("--delay below 0.5s is not allowed (max 2 requests/second)")
+    if args.delay < MIN_DELAY_S:
+        parser.error(f"--delay below {MIN_DELAY_S}s is not allowed (max {1 / MIN_DELAY_S:.0f} requests/second)")
     if not 1 <= args.concurrency <= 4:
         parser.error("--concurrency must be 1..4")
     if not 1 <= args.max_stores <= len(STORES):

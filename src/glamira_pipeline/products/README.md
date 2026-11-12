@@ -94,6 +94,6 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 
 - **Store order:** stores are tried in the priority order of `stores.py` (English storefronts, USD → EUR → GBP → …). The next store is tried only on `404 Product not found`, up to `--max-stores` (default 3).
 - **Stopping:** any 401/403/429 or non-JSON page stops the run with exit code 3; 3 consecutive network errors also stop it. Nothing is retried automatically.
-- **Pacing:** request starts are spaced by `--delay` (minimum 0.25 s, so at most 4 req/s) plus up to `--jitter` random seconds. `--concurrency` (1–4) sets how many products are in flight.
+- **Pacing:** request starts are spaced by `--delay` (minimum 0.125 s, so at most 8 req/s) plus up to `--jitter` random seconds. `--concurrency` (1–8) sets how many products are in flight.
 - **Outputs:** `crawl.sqlite3` is the checkpoint. Rerunning skips IDs already `ok` or `not_found`, so resume is idempotent. Each run exports `products.jsonl` (all price fields, `gender` as served) and `option_values.jsonl` (`value_id` → `value_sku`/titles, for reference). Per-run metrics are appended to `runs.jsonl`.
 - **Raw JSON:** saved (gzip) only with `--raw-dir`.

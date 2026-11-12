@@ -14,8 +14,8 @@ from glamira_pipeline.products.crawl import CrawlStopped, crawl, export, open_ch
 from glamira_pipeline.products.pipeline import run_deduplication
 from glamira_pipeline.products.stores import STORES
 
-# Hard rate ceiling for react_data requests: at most 4 request starts per second.
-MIN_DELAY_S = 0.25
+# Hard rate ceiling for react_data requests: at most 8 request starts per second.
+MIN_DELAY_S = 0.125
 
 
 def main() -> None:
@@ -89,15 +89,15 @@ def crawl_main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--delay", type=float, default=3.0, help="Minimum seconds between request starts")
-    parser.add_argument("--concurrency", type=int, default=1, help="Products in flight (1-4)")
+    parser.add_argument("--concurrency", type=int, default=1, help="Products in flight (1-8)")
     parser.add_argument("--jitter", type=float, default=0.0, help="Extra uniform random seconds")
     parser.add_argument("--max-stores", type=int, default=3, help="Stores tried on 404, in priority order")
     parser.add_argument("--raw-dir", type=Path, help="Also save raw JSON (gzip); off by default")
     args = parser.parse_args()
     if args.delay < MIN_DELAY_S:
         parser.error(f"--delay below {MIN_DELAY_S}s is not allowed (max {1 / MIN_DELAY_S:.0f} requests/second)")
-    if not 1 <= args.concurrency <= 4:
-        parser.error("--concurrency must be 1..4")
+    if not 1 <= args.concurrency <= 8:
+        parser.error("--concurrency must be 1..8")
     if not 1 <= args.max_stores <= len(STORES):
         parser.error(f"--max-stores must be 1..{len(STORES)}")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

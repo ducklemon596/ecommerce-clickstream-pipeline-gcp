@@ -269,3 +269,17 @@ Sample là 200 ID ngẫu nhiên từ 19,557 distinct ID trong MongoDB.
 - **Ước tính crawl toàn bộ 19,557 ID ở 4 req/s:** khoảng 1.4 giờ, khoảng 20,000 request, khoảng 200 MB truyền.
 - **Giới hạn trên của CLI:** `--delay ≥ 0.25 s` (≤ 4 req/s), tối đa 4 request đồng thời.
 - **Chưa kiểm chứng:** mỗi lô chỉ chạy dưới 9 phút; một lần crawl kéo dài hơn 1 giờ vẫn có thể bị Akamai đánh giá khác.
+
+### 8 req/s: `--delay 0.125 --concurrency 8`
+
+Tốc độ thực tế = min(1 / delay, concurrency / latency). Ở 0.25 s với 4 luồng, giới hạn đến từ pacer (4/s), không phải từ số luồng (4 / 0.54 ≈ 7.4/s). Vì vậy muốn nhanh hơn phải giảm delay; 8 luồng là để đủ cho khoảng 8 × 0.53 ≈ 4.2 request chạy song song ở 8 req/s.
+
+| Lô | Request | Thời gian | req/s | Từng phút | p50 / p95 latency | Kết quả |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| `rate_0125` (seed 51) | 1,034 | 131.2 s | **7.88** | 7.92, 7.97 | 0.53 / 0.97 s | 983 ok, 17 ID not_found, **0 bị chặn hoặc lỗi** |
+
+- Latency không tăng so với mức 2 và 4 req/s (p50 khoảng 0.53 s).
+- **Ước tính crawl toàn bộ 19,557 ID: khoảng 42 phút** (khoảng 20,000 request).
+- CLI giờ cho phép `--delay ≥ 0.125 s` (≤ 8 req/s) và `--concurrency ≤ 8`.
+- **Chưa kiểm chứng:** lô chỉ kéo dài khoảng 2 phút.
+- Một lần chạy thử 8 luồng ở 0.25 s (`conc_8`) bị dừng giữa chừng sau 139 request, tất cả đều ok hoặc not_found.

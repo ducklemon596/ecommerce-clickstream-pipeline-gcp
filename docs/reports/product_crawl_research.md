@@ -303,3 +303,20 @@ Pipeline giờ ghi thẳng vào `countly.products` và `countly.product_option_v
 2. **`uv run` chuyển tiếp Ctrl+C**, nên process nhận 2 tín hiệu gần như cùng lúc. Giờ crawler bỏ qua tín hiệu lặp trong vòng 2 s.
 
 Hiện có 520 sản phẩm trong `countly.products` từ các lần kiểm chứng. Crawl full sẽ chạy tiếp từ đó.
+
+### Crawl full lần 1: bị Akamai challenge (13/11/2026)
+
+Lệnh: `crawl-products --ids-file data/product_ids/full/product_ids.jsonl --delay 0.125 --concurrency 8 --batch-size 200`, run `91ec5e4217e549de9264cd2ee33a00c7`.
+
+| Chỉ số | Giá trị |
+| --- | ---: |
+| Thời gian trước khi dừng | 211.8 s |
+| Request | 1,562 (1,503 ok, 57 not_found, 2 blocked) |
+| Tốc độ | 7.37 req/s; p50 / p95 latency 0.54 / 0.89 s |
+| Ghi vào Mongo trong run này | 1,524 sản phẩm (1,503 success, 19 not_found, 2 blocked) |
+| Tổng trong `countly.products` sau run | 2,044 (2,013 success, 29 not_found, 2 blocked); 76,959 dòng option |
+
+- **Kiểu chặn:** `HTTP 200` với `text/html` dài 2,855 byte. Đó là trang challenge của Akamai Bot Manager: `meta refresh` tới cùng URL kèm `bm-verify=…` và cookie `ak_bmsc`. Trang này yêu cầu client chạy JavaScript, nên crawler phân loại là `blocked` và dừng. Một request kiểm tra sau khi dừng vẫn nhận đúng challenge đó.
+- **Không vượt challenge:** không đi theo `bm-verify`, không chạy JS, không giả trình duyệt, không đổi IP.
+- **Bối cảnh:** trong khoảng 1.5 giờ trước đó, cùng IP đã gửi khoảng 5,600 request qua các lô test (khoảng 1,000 request mỗi lô ở 2, 4 và 8 req/s; 520 lần kiểm chứng; cộng run này). Các lô ngắn trước đó không bị chặn. Nhiều khả năng Akamai đánh giá theo tổng khối lượng hoặc tốc độ kéo dài từ một IP, không phải theo từng request riêng lẻ. **Chưa kiểm chứng.**
+- **Trạng thái dữ liệu:** checkpoint hoạt động đúng. 2 ID `blocked` có `attempts = 0` và sẽ được crawl lại; còn 17,515 ID chưa crawl.

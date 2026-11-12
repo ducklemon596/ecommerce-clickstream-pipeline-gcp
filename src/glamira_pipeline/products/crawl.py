@@ -1,15 +1,17 @@
 """Resumable, paced crawl of ``react_data`` into a SQLite checkpoint and JSONL.
 
 Each product is requested from the first store in priority order and falls
-back to the next store only on ``404 Product not found``. A ``blocked``
+back to the next store only on ``404 Product not found``. Requests run
+concurrently up to a limit, with request starts paced. A ``blocked``
 response stops the run immediately (no retry, no store switching); repeated
 network errors also stop it. Finished products (``ok`` or ``not_found`` on
 every tried store) are skipped on rerun, so resuming is safe and idempotent.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import datetime, timezone
 import gzip
 import json
@@ -111,76 +113,115 @@ def _write_raw(raw_dir: Path, product_id: str, store: Store, body: bytes) -> Non
     os.replace(temporary, target)
 
 
+class _Pacer:
+    """Space request *starts* by ``delay + uniform(0, jitter)`` seconds.
+
+    Starts are serialized, so ``delay_s`` bounds the request rate (0.5 s means
+    at most 2 starts per second) however many requests are in flight.
+    """
+
+    def __init__(self, delay_s: float, jitter_s: float, rng: random.Random,
+                 sleep: Callable[[float], Awaitable[None]], clock: Callable[[], float]) -> None:
+        self._delay, self._jitter, self._rng = delay_s, jitter_s, rng
+        self._sleep, self._clock = sleep, clock
+        self._next: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        async with self._lock:
+            if self._next is not None and self._clock() < self._next:
+                await self._sleep(self._next - self._clock())
+            self._next = self._clock() + self._delay + self._rng.uniform(0, self._jitter)
+
+
 def crawl(connection: sqlite3.Connection, product_ids: Iterable[str], *,
           stores: Sequence[Store] = STORES, max_stores: int = 3, delay_s: float = 3.0,
-          jitter_s: float = 0.0, max_consecutive_errors: int = 3, raw_dir: Path | None = None,
-          fetcher: Callable[[str], FetchResult] = fetch, sleep: Callable[[float], None] = time.sleep,
-          rng: random.Random | None = None) -> dict:
+          jitter_s: float = 0.0, concurrency: int = 1, max_consecutive_errors: int = 3,
+          raw_dir: Path | None = None, fetcher: Callable[[str], FetchResult] = fetch,
+          sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+          clock: Callable[[], float] = time.monotonic, rng: random.Random | None = None) -> dict:
     """Crawl unfinished IDs; return per-run metrics. Raises ``CrawlStopped`` on a block.
 
-    A pause of ``delay_s + uniform(0, jitter_s)`` precedes every request after
-    the first. Metrics cover only requests made in this invocation.
+    Up to ``concurrency`` products are in flight; request starts are paced by
+    ``delay_s + uniform(0, jitter_s)``. A block or repeated errors stop new
+    requests at once; in-flight responses are still recorded. SQLite is used
+    only from the event-loop thread. Metrics cover this invocation only.
     """
-    rng = rng or random.Random()
+    return asyncio.run(_crawl(connection, product_ids, stores=stores, max_stores=max_stores,
+                              delay_s=delay_s, jitter_s=jitter_s, concurrency=concurrency,
+                              max_consecutive_errors=max_consecutive_errors, raw_dir=raw_dir,
+                              fetcher=fetcher, sleep=sleep, clock=clock, rng=rng or random.Random()))
+
+
+async def _crawl(connection, product_ids, *, stores, max_stores, delay_s, jitter_s, concurrency,
+                 max_consecutive_errors, raw_dir, fetcher, sleep, clock, rng) -> dict:
+    if concurrency < 1:
+        raise ValueError("concurrency must be at least 1")
     done = finished_ids(connection)
+    pacer = _Pacer(delay_s, jitter_s, rng, sleep, clock)
+    pending = iter(product_ids)
     results: list[FetchResult] = []
     outcome: Counter = Counter()
-    consecutive_errors = 0
+    state = {"consecutive_errors": 0, "stop_reason": None}
     started = time.monotonic()
-    stop_reason = None
 
-    def request(product_id: str, store: Store) -> FetchResult:
-        if results:
-            sleep(delay_s + rng.uniform(0, jitter_s))
-        result = fetcher(react_data_url(store.host, product_id, store.currency))
-        results.append(result)
-        return result
+    def stop(reason: str) -> None:
+        state["stop_reason"] = state["stop_reason"] or reason
 
-    def summarize() -> dict:
-        metrics = run_metrics(results, time.monotonic() - started)
-        metrics.update(outcome, stop_reason=stop_reason, delay_s=delay_s, jitter_s=jitter_s,
-                       max_stores=max_stores)
-        return metrics
+    async def handle(product_id: str) -> None:
+        final = None
+        for store in stores[:max_stores]:
+            await pacer.wait()
+            if state["stop_reason"]:
+                return  # leave the ID unfinished for the next run
+            result = await asyncio.to_thread(fetcher, react_data_url(store.host, product_id, store.currency))
+            results.append(result)
+            with connection:
+                _record_attempt(connection, product_id, store, result)
+                if result.status == "ok":
+                    _save_product(connection, product_id, store, result)
+            if result.status == "blocked":
+                stop(f"blocked (HTTP {result.http_status}) at {store.host} id {product_id}")
+                return
+            if result.status == "error":
+                state["consecutive_errors"] += 1
+                LOGGER.warning("error %s id %s: %s", store.host, product_id, result.error or result.http_status)
+                if state["consecutive_errors"] >= max_consecutive_errors:
+                    stop(f"{state['consecutive_errors']} consecutive errors")
+                final = "error"
+                break  # retry this ID on the next run, not on another store
+            state["consecutive_errors"] = 0
+            final = result.status
+            if result.status == "ok":
+                if raw_dir is not None:
+                    _write_raw(raw_dir, product_id, store, result.raw)
+                break
+        if final == "not_found":
+            with connection:
+                connection.execute("INSERT OR REPLACE INTO products VALUES(?,?,?,?,?)",
+                                   (product_id, "not_found", None, None, datetime.now(timezone.utc).isoformat()))
+        outcome[f"products_{final}"] += 1
+        LOGGER.info("id %s -> %s", product_id, final)
 
-    try:
-        for product_id in product_ids:
+    async def worker() -> None:
+        while not state["stop_reason"]:
+            product_id = next(pending, None)
+            if product_id is None:
+                return
             if product_id in done:
                 outcome["skipped_finished"] += 1
                 continue
-            final = None
-            for store in stores[:max_stores]:
-                result = request(product_id, store)
-                with connection:
-                    _record_attempt(connection, product_id, store, result)
-                    if result.status == "ok":
-                        _save_product(connection, product_id, store, result)
-                if result.status == "blocked":
-                    stop_reason = f"blocked (HTTP {result.http_status}) at {store.host} id {product_id}"
-                    raise CrawlStopped(stop_reason)
-                if result.status == "error":
-                    consecutive_errors += 1
-                    LOGGER.warning("error %s id %s: %s", store.host, product_id, result.error or result.http_status)
-                    if consecutive_errors >= max_consecutive_errors:
-                        stop_reason = f"{consecutive_errors} consecutive errors"
-                        raise CrawlStopped(stop_reason)
-                    final = "error"
-                    break  # retry this ID on the next run, not on another store
-                consecutive_errors = 0
-                final = result.status
-                if result.status == "ok":
-                    if raw_dir is not None:
-                        _write_raw(raw_dir, product_id, store, result.raw)
-                    break
-            if final == "not_found":
-                with connection:
-                    connection.execute("INSERT OR REPLACE INTO products VALUES(?,?,?,?,?)",
-                                       (product_id, "not_found", None, None, datetime.now(timezone.utc).isoformat()))
-            outcome[f"products_{final}"] += 1
-            LOGGER.info("id %s -> %s", product_id, final)
-    except CrawlStopped as exc:
-        exc.metrics = summarize()
-        raise
-    return summarize()
+            await handle(product_id)
+
+    await asyncio.gather(*(worker() for _ in range(concurrency)))
+    metrics = run_metrics(results, time.monotonic() - started)
+    metrics.update(outcome, stop_reason=state["stop_reason"], delay_s=delay_s, jitter_s=jitter_s,
+                   max_stores=max_stores, concurrency=concurrency)
+    if state["stop_reason"]:
+        exc = CrawlStopped(state["stop_reason"])
+        exc.metrics = metrics
+        raise exc
+    return metrics
 
 
 def run_metrics(results: Sequence[FetchResult], wall_s: float) -> dict:

@@ -40,6 +40,10 @@ def payload(product_id=100002, gender="women"):
     }
 
 
+async def no_sleep(seconds):
+    return None
+
+
 UK = Store("www.glamira.co.uk", "GBP", "glgb")
 US = Store("www.glamira.com", "USD", "glus")
 
@@ -104,8 +108,8 @@ class CrawlTests(unittest.TestCase):
         fetcher, calls = fake_fetcher(responses)
         connection = open_checkpoint(Path(directory) / "crawl.sqlite3")
         try:
-            metrics = crawl(connection, ids, stores=(US, UK), fetcher=fetcher, sleep=lambda s: None,
-                            rng=random.Random(1), **kwargs)
+            metrics = crawl(connection, ids, stores=(US, UK), fetcher=fetcher, sleep=no_sleep,
+                            clock=lambda: 0.0, rng=random.Random(1), **kwargs)
             return metrics, calls, export(connection, Path(directory))
         finally:
             connection.close()
@@ -132,15 +136,29 @@ class CrawlTests(unittest.TestCase):
             self.assertEqual(calls, [(US.host, "2"), (US.host, "3")])
 
     def test_pacing_adds_jitter_between_requests(self):
-        pauses = []
-        fetcher, _ = fake_fetcher({})
+        for concurrency in (1, 3):
+            pauses = []
+
+            async def record(seconds):
+                pauses.append(seconds)
+            fetcher, _ = fake_fetcher({})
+            with TemporaryDirectory() as directory:
+                connection = open_checkpoint(Path(directory) / "crawl.sqlite3")
+                crawl(connection, ["1", "2", "3", "4"], stores=(UK,), fetcher=fetcher, sleep=record,
+                      clock=lambda: 0.0, delay_s=2, jitter_s=1, concurrency=concurrency, rng=random.Random(1))
+                connection.close()
+            self.assertEqual(len(pauses), 3)
+            self.assertTrue(all(2 <= p <= 3 for p in pauses))
+
+    def test_concurrent_block_stops_new_requests(self):
         with TemporaryDirectory() as directory:
+            with self.assertRaises(CrawlStopped):
+                self.run_crawl(directory, [str(i) for i in range(1, 20)], {(US.host, "3"): "blocked"},
+                               concurrency=3)
             connection = open_checkpoint(Path(directory) / "crawl.sqlite3")
-            crawl(connection, ["1", "2", "3"], stores=(UK,), fetcher=fetcher, sleep=pauses.append,
-                  delay_s=2, jitter_s=1, rng=random.Random(1))
+            attempts = connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
             connection.close()
-        self.assertEqual(len(pauses), 2)
-        self.assertTrue(all(2 <= p <= 3 for p in pauses))
+            self.assertLessEqual(attempts, 5)
 
     def test_seeded_sample_is_reproducible(self):
         ids = [str(i) for i in range(100)]

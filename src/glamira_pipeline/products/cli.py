@@ -85,13 +85,16 @@ def crawl_main() -> None:
     parser.add_argument("--sample", type=int, help="Seeded random sample size drawn before --limit")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--delay", type=float, default=3.0, help="Seconds between requests")
+    parser.add_argument("--delay", type=float, default=3.0, help="Minimum seconds between request starts")
+    parser.add_argument("--concurrency", type=int, default=1, help="Products in flight (1-4)")
     parser.add_argument("--jitter", type=float, default=0.0, help="Extra uniform random seconds")
     parser.add_argument("--max-stores", type=int, default=3, help="Stores tried on 404, in priority order")
     parser.add_argument("--raw-dir", type=Path, help="Also save raw JSON (gzip); off by default")
     args = parser.parse_args()
     if args.delay < 0.5:
         parser.error("--delay below 0.5s is not allowed (max 2 requests/second)")
+    if not 1 <= args.concurrency <= 4:
+        parser.error("--concurrency must be 1..4")
     if not 1 <= args.max_stores <= len(STORES):
         parser.error(f"--max-stores must be 1..{len(STORES)}")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -100,7 +103,7 @@ def crawl_main() -> None:
     try:
         ids = select_ids(read_product_ids(args.ids_file), sample=args.sample, seed=args.seed, limit=args.limit)
         try:
-            metrics = crawl(connection, ids, max_stores=args.max_stores, delay_s=args.delay,
+            metrics = crawl(connection, ids, max_stores=args.max_stores, delay_s=args.delay, concurrency=args.concurrency,
                             jitter_s=args.jitter, raw_dir=args.raw_dir)
         except CrawlStopped as exc:
             metrics, stopped, exit_code = exc.metrics, str(exc), 3

@@ -238,3 +238,21 @@ Sample là 200 ID ngẫu nhiên (`--sample 200 --seed 7`) từ 12,734 ID có tro
 | Bảng option | 9,673 dòng. 350 dòng không có `value_id` (option nhập tự do: engraving). 1,146 dòng không có `part_type` (`radio`, `engraving_*`), khi đó nhận diện bằng `option_type` |
 
 Giới hạn: đây là catalog năm 2026, giá là USD của store `.com` hiện tại. Sample lấy từ pool local, chưa phải danh sách distinct ID từ MongoDB.
+
+### Async: nghỉ 0.5 s giữa các lần bắt đầu request, tối đa 4 request đồng thời
+
+`--delay` giờ là khoảng cách tối thiểu giữa **các lần bắt đầu request**, nên `--delay 0.5` giới hạn ở tối đa 2 req/s, dù có bao nhiêu request đang chạy. Lệnh:
+
+```bash
+uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl --output-dir data/product_crawl/async_test --sample 200 --seed 11 --delay 0.5 --concurrency 4
+```
+
+Sample là 200 ID ngẫu nhiên từ 19,557 distinct ID trong MongoDB.
+
+| Request | Thời gian | req/s | p50 / p95 latency | Kết quả |
+| ---: | ---: | ---: | --- | --- |
+| 206 | 103.5 s | **1.99** | 0.66 / 1.10 s | 197 ok; 3 ID not_found (9 request); không bị chặn |
+
+- Bảng option có 9,482 dòng; tổng dung lượng truyền 2.06 MB (khoảng 10 KB mỗi request).
+- **Ước tính crawl toàn bộ 19,557 ID: khoảng 2.7 giờ** ở 2 req/s, thêm khoảng 1.5% request fallback cho các ID 404.
+- Lần chạy chỉ kéo dài khoảng 2 phút; chưa kiểm chứng việc duy trì 2 req/s trong nhiều giờ.

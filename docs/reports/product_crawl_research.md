@@ -356,3 +356,20 @@ Lệnh: `crawl-products --ids-file data/product_ids/full/product_ids.jsonl --del
 **Nhận xét:** ở khoảng 3.8 req/s, Akamai không challenge trong suốt 80 phút liên tục (18K request). Lần 1 chạy 7.4 req/s và bị challenge sau khoảng 1,500 request, nhưng trước đó đã có các lô test.
 
 Từ hai lần chạy này **chưa thể tách riêng** ảnh hưởng của tốc độ với ảnh hưởng của khoảng nghỉ 10 phút. Vì vậy 4 req/s chỉ là mức đã quan sát là ổn, chưa phải giới hạn đã xác định.
+
+### Kiểm tra lại 436 ID `not_found` trên cả 11 store tiếng Anh (13/11/2026)
+
+Lệnh: `crawl-products --ids-file data/product_ids/full/product_ids.jsonl --recheck-not-found --max-stores 11 --delay 0.2 --jitter 0.1 --concurrency 6 --batch-size 50 --block-retries 3 --block-wait 300`. Run `4024deb025844a46a8c6be7acc58651b`, trạng thái `completed`.
+
+Lần crawl full trước, mỗi ID chỉ được thử trên 3 store đầu (`.com`, `.africa`, `.ie`). Lần này mỗi ID được thử trên cả 11 store, kể cả 3 store cũ.
+
+| Chỉ số | Giá trị |
+| --- | ---: |
+| ID kiểm tra lại | 436 (lấy snapshot trước khi chạy) |
+| Request | 4,796 = 436 × 11; **tất cả đều là 404 `Product not found`**, 0 blocked, 0 error |
+| Thời gian / tốc độ | 1,213.5 s / 3.95 req/s; latency p50 / p95 0.52 / 1.01 s |
+| Kết quả | 436/436 vẫn `not_found`, `attempts = 2`, `source.host` = store cuối cùng (`www.glamira.ae`) |
+| Tổng sau khi kiểm tra | 19,121 success, 436 not_found; option rows giữ nguyên 923,294 |
+
+- **Kết luận:** các ID này không còn được bán trên bất kỳ store tiếng Anh nào. Thử thêm store không tìm lại được sản phẩm nào, nên `--max-stores 3` mặc định là đủ.
+- **Mức ảnh hưởng tới phân tích:** 436 ID này chiếm 385,273 trên 25,054,210 lượt tham chiếu product trong event, tức **1.54%**, đếm theo `product_ids.jsonl`. Ba ID được tham chiếu nhiều nhất là 90753 (35,635 lượt), 90730 (30,831) và 110423 (27,109). Khi phân tích theo sản phẩm, các event này sẽ không có thông tin sản phẩm. Muốn có thì phải lấy từ nguồn khác, ví dụ HTML cũ hoặc field có sẵn trong event; việc này chưa làm.

@@ -67,6 +67,7 @@ def setup_collections_main() -> None:
 
 
 def _git_sha() -> str | None:
+    """Return the checked-out commit for run provenance, or None outside a git checkout."""
     try:
         return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                               check=True, cwd=Path(__file__).parent).stdout.strip()

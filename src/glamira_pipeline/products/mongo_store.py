@@ -154,6 +154,7 @@ class MongoProductStore:
             self.db[OPTION_VALUES].delete_many({"product_id": {"$in": succeeded}, "run_id": {"$ne": self.run_id}})
 
     def heartbeat(self, progress: dict, metrics: dict | None = None) -> None:
+        """Refresh the run's lock heartbeat and record progress after each batch."""
         update = {"heartbeat_at": _now(), "progress": progress}
         if metrics is not None:
             update["metrics"] = metrics
@@ -189,6 +190,7 @@ def start_run(db: Database, *, params: dict, input_info: dict, git_sha: str | No
 
 def finish_run(db: Database, run_id: str, *, status: str, metrics: dict | None,
                progress: dict | None, stop_reason: str | None) -> None:
+    """Record a run's final status (``completed``, ``stopped`` or ``failed``) and release the lock."""
     db[RUNS].update_one({"_id": run_id, "type": RUN_TYPE}, {"$set": {
         "status": status, "finished_at": _now(), "heartbeat_at": _now(), "metrics": metrics,
         "progress": progress, "stop_reason": stop_reason}})

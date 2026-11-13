@@ -13,6 +13,8 @@ from typing import NamedTuple
 
 
 class Store(NamedTuple):
+    """One storefront: its host, native currency and Magento store code."""
+
     host: str
     currency: str
     store_code: str

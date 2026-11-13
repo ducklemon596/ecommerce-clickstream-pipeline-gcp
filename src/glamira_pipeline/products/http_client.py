@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-USER_AGENT = "glamira-pipeline-research/0.1"
+USER_AGENT = "glamira-pipeline/0.1"
 BLOCK_STATUSES = frozenset({401, 403, 429})
 
 

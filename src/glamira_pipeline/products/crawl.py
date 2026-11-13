@@ -48,9 +48,14 @@ class CrawlStore(Protocol):
 
     run_id: str
 
-    def load_checkpoint(self, max_attempts: int) -> tuple[set[str], dict[str, int]]: ...
-    def write_batch(self, items: Sequence[BatchItem]) -> None: ...
-    def heartbeat(self, progress: dict, metrics: dict | None = None) -> None: ...
+    def load_checkpoint(self, max_attempts: int) -> tuple[set[str], dict[str, int]]:
+        """Return finished IDs and the attempt count of every unfinished known ID."""
+
+    def write_batch(self, items: Sequence[BatchItem]) -> None:
+        """Persist a batch idempotently (replaying it must leave identical data)."""
+
+    def heartbeat(self, progress: dict, metrics: dict | None = None) -> None:
+        """Record progress and keep the run lock fresh."""
 
 
 def read_product_ids(path: Path) -> list[str]:
@@ -80,6 +85,7 @@ class _Pacer:
         self._lock = asyncio.Lock()
 
     async def wait(self) -> None:
+        """Sleep until the next request may start, then reserve the following slot."""
         async with self._lock:
             if self._next is not None and self._clock() < self._next:
                 await self._sleep(self._next - self._clock())
@@ -87,6 +93,7 @@ class _Pacer:
 
 
 def _write_raw(raw_dir: Path, product_id: str, store: Store, body: bytes) -> None:
+    """Save one raw payload as ``<raw_dir>/<host>/<id>.json.gz``, atomically (opt-in debugging aid)."""
     target = raw_dir / store.host / f"{product_id}.json.gz"
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".tmp")
@@ -150,6 +157,11 @@ def crawl(store_sink: CrawlStore, product_ids: Iterable[str], *, stores: Sequenc
 async def _crawl(sink, selected, pending, already_finished, previous_attempts, *, stores, max_stores, delay_s, jitter_s,
                  concurrency, batch_size, flush_interval_s, max_consecutive_errors, raw_dir,
                  fetcher, sleep, clock, rng) -> dict:
+    """Run ``concurrency`` workers over ``pending`` sharing one pacer and one write buffer.
+
+    All state lives on the event loop thread; only HTTP calls run in worker
+    threads, so the buffer and counters need no locks.
+    """
     pacer = _Pacer(delay_s, jitter_s, rng, sleep, clock)
     queue = iter(pending)
     results: list[FetchResult] = []
@@ -168,7 +180,11 @@ async def _crawl(sink, selected, pending, already_finished, previous_attempts, *
         return data
 
     def flush() -> None:
-        # Synchronous on purpose: it also runs from ``finally`` during cancellation.
+        """Write the buffer as one batch, then heartbeat.
+
+        Synchronous on purpose: it also runs from ``finally`` during
+        cancellation, when awaiting is no longer possible.
+        """
         if not buffer:
             return
         batch = buffer[:]
@@ -182,6 +198,7 @@ async def _crawl(sink, selected, pending, already_finished, previous_attempts, *
         state["stop_reason"] = state["stop_reason"] or reason
 
     async def handle(product_id: str) -> None:
+        """Fetch one product, falling back through stores only on 404, and buffer the outcome."""
         final: tuple[Store, FetchResult] | None = None
         for store in stores[:max_stores]:
             await pacer.wait()
@@ -207,6 +224,7 @@ async def _crawl(sink, selected, pending, already_finished, previous_attempts, *
         if final is None:
             return
         store, result = final
+        # A product with an error or block is still written, so the next run knows its attempts.
         item = _batch_item(product_id, store, result, sink.run_id, previous_attempts.get(product_id, 0))
         buffer.append(item)
         outcome[f"products_{item.product['status']}"] += 1

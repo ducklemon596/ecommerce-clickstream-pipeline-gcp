@@ -50,6 +50,7 @@ def to_decimal128(value: Any) -> Decimal128 | None:
 
 
 def _id_text(value: Any) -> str | None:
+    """Normalize option/value IDs to strings so ``_id`` keys compare equal across runs."""
     return None if value is None or value == "" else str(value)
 
 

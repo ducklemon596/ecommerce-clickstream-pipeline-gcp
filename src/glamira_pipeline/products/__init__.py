@@ -1,1 +1,1 @@
-"""Disk-backed extraction of observed product configurations; no web access."""
+"""Product enrichment: distinct product IDs and a paced react_data crawl into MongoDB."""

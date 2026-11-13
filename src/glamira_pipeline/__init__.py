@@ -1,1 +1,1 @@
-"""Local Glamira sample extraction and data-quality assessment."""
+"""Glamira event pipeline: sampling, data quality, IP and product enrichment."""

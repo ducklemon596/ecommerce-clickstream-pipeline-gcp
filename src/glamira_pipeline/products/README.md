@@ -1,130 +1,184 @@
-# Product configuration deduplication
+# Product enrichment: operations guide
 
-This step prepares observed product configurations for a later crawler. It does not fetch websites or infer website defaults. Both local JSON and MongoDB use the same normalization and SQLite counting functions.
-
-The same scan also extracts `current_url` from **all event types** into a disk-backed inventory. `product_urls.jsonl` contains every observed URL variant whose exact hostname/path has product evidence elsewhere in the source. Evidence comes from `.html` paths (including a trailing slash) and observed Magento `/catalog/product/view/id/…` routes when an event carries `product_id` or `viewing_product_id` and a store ID. There is no event type allowlist, so a new event type can contribute without a code change. Product/store mappings are arrays and retain which ID field supplied each association. No hostname is rewritten or country inferred.
-
-`unverified_product_urls.jsonl` retains product-shaped URLs without ID evidence for review: the suffix or route alone is not proof of a product page. Checkout, listing, account and home paths do not establish product evidence. Exact URL variants (including query/tracking) remain separate in this inventory; occurrences count `current_url` fields only. Configuration counts still refer only to detail events. Referrer URLs are never projected or read. This is evidence from the supplied source, not a guarantee of discovering every website product. Version 3 checkpoints require a fresh output directory rather than resuming older extraction checkpoints. Use `data/product_configurations/current_url_only_100k` for the latest local validation.
-
-The subsequent [MongoDB event research](../../../analysis/product_configuration_research/README.md) covers all 27 event types and documents unresolved selection, quality, recommendation and cart semantics. Its handling proposals await review; this workflow still implements the earlier local checkpoint described below.
-
-## Commands
-
-```bash
-uv sync
-uv run deduplicate-products --sample data/summary_sample.json \
-  --limit 100000 --batch-size 5000 \
-  --output-dir data/product_configurations/sample_100k_final
-```
-
-`--limit` counts **all source documents before event filtering** and requires that many rows to exist. Only `collection == "view_product_detail"` contributes configurations. Omitting the limit processes the complete input. JSON input is a streamed MongoDB Extended JSON array, not a JSONL file. A sample prefix is sequential and non-random.
-
-The prepared VM command, to run from the deployed repository after VM access is available, is:
-
-```bash
-# Load MONGODB_URI from the existing protected VM configuration into the environment.
-# Do not put credentials in the command or print the configuration.
-uv sync --frozen
-uv run deduplicate-products --mongo --database countly --collection summary \
-  --batch-size 5000 --output-dir /data/glamira_products/configurations_full_v1
-```
-
-Review the [research decisions](../../../analysis/product_configuration_research/OPEN_QUESTIONS.md) before authorizing a full extraction. Use a read-only MongoDB account with source read and collection-metadata permissions. Connection settings come from `MONGODB_URI`; the library contains no GCP or SSH settings. Reserve disk for SQLite plus JSONL export on the data disk. This command scans source events once, projecting only `_id`, `collection`, `product_id`, `store_id`, `current_url`, `option`, and `viewing_product_id`. The MongoDB source must have ObjectId identifiers and remain unchanged through completion/resume. `_id` sorting uses the existing default index; it avoids an unindexed event-type query or a new index.
-
-## Identity and normalization
-
-Sample inspection found `store_id`, not `store`. Several store IDs share one hostname, so the unique key is **(product_id, store_id, hostname, normalized_options)**. Output `store` is an alias of the original `store_id`; hostname is stored separately in full, for example `www.glamira.co.uk`. Product and store IDs must be nonempty strings; neither is inferred from the URL.
-
-- HTML entities such as `&amp;` are decoded before URL parsing. Only absolute HTTP(S) URLs without credentials or unusual ports are accepted.
-- Query options are percent-decoded once, sorted by key, and serialized deterministically. Case and decoded value text are preserved; standard query decoding interprets `+` as a space. No translation or semantic mapping occurs.
-- Missing options and values equal to the empty string are omitted. A URL without remaining options yields `{}`. No default configuration is added for products that were observed only with options.
-- Repeated identical nonempty values collapse to one pair; distinct values for the same key reject the event. Invalid encoding, malformed query keys, and missing/invalid identifiers are counted explicitly. The first fatal reason is counted per rejected event.
-- Advertising parameters `gclid`, `fbclid`, `dclid`, `msclkid`, `gbraid`, `wbraid`, `ttclid`, `keyword`, `matchtype`, `campaignid`, and prefixes `utm_`/`itm_` are excluded. The technical `no_cache` parameter is also excluded. Matching these exclusion names ignores case.
-- Unknown parameters are retained and flagged, including ambiguous keys such as `smartid`, `discountid` and `___store`. This can conservatively split configurations; the policy should be reviewed before crawling. Unknown values are never silently discarded.
-
-The observed `option` arrays contain `alloy`/`diamond` internal IDs and blank value labels. The implementation compares URL key presence with available option labels and counts validation warnings. It cannot verify ID-to-URL-value equality without a mapping. Populated internal IDs never supply missing URL options. Historical claims of exact option/URL value parity are therefore unverified for this sample.
-
-`source_url` is the first accepted representative URL in source order, HTML-decoded but otherwise retained, including tracking parameters. Tracking values do not enter the key. Some events point at checkout configuration pages or development hosts: retaining an observed URL does not assert that it is a public, crawlable product page. A future crawler must validate its target policy separately.
-
-## Storage, resume and outputs
+This package attaches product attributes to the product IDs seen in `countly.summary`. It does this by crawling Glamira's public `react_data` endpoint into MongoDB. The [decision record](../../../docs/decisions/product_crawl.md) explains *why* it is built this way; this guide explains how to run and verify it.
 
 ```mermaid
 flowchart LR
-    A[JSON stream or MongoDB cursor] --> B[Bounded event batches]
-    B --> C[Detail event validation and URL normalization]
-    C --> D[SQLite unique key and occurrence counts]
-    D --> E[Count reconciliation]
-    E --> F[JSONL and aggregate summary]
+    S[(countly.summary<br/>41.4M events)] -->|1 aggregation, read only| L[list-product-ids]
+    L --> F[product_ids.jsonl<br/>19,557 IDs]
+    F --> C[crawl-products]
+    P[(countly.products)] -->|finished IDs| C
+    C -->|paced HTTPS, gzip| W[react_data on English storefronts]
+    C -->|idempotent batch upserts| P
+    C --> O[(countly.product_option_values)]
+    C --> R[(countly.enrichment_runs<br/>type: product_crawl)]
 ```
 
-SQLite holds the unique set on disk with an 8 MiB page cache; memory holds only the current event batch. MongoDB requested batches are additionally constrained by its 16 MiB response limit. Batch size defaults to 5,000 and does not change normalization.
+| Module | Responsibility |
+| --- | --- |
+| `catalog_ids.py` | Aggregation that lists distinct product IDs, and its atomic file output |
+| `stores.py` | English storefronts in priority order |
+| `http_client.py` | One honest HTTP request and its classification (`ok` / `not_found` / `blocked` / `error`) |
+| `react_data.py` | Pure conversion of a payload into `products` and option documents |
+| `mongo_store.py` | Collections, validators, checkpoint, batch writes and run lock |
+| `crawl.py` | Pacing, concurrency, store fallback, batching and graceful stop |
+| `cli.py` | Argument validation, run lifecycle and block backoff |
 
-Each SQLite transaction commits occurrence increments, aggregate counters and source progress together. On interruption, rerun the identical command and output directory. JSON resume reparses and skips the committed prefix; MongoDB resumes at `_id > last_committed_id`. These assume an immutable source; collection UUID detects collection recreation, not in-place edits. JSON identity includes its SHA-256. Source, limit and normalization version changes reject checkpoint reuse. Use only one process per output directory. A hard power failure can lose timing for the interrupted invocation, but committed event counts remain recoverable.
+## Prerequisites
 
-Outputs are `configurations.sqlite3`, `configurations.jsonl`, `summary.json`, and `summary.md`. SQLite and JSONL have mode `0600`; keep the output directory private. Use ignored `data/` locally and private paths outside version control on the VM. JSONL is exported only after the scan completes and count equations reconcile, with temporary-file rename protecting publication. SQLite and filesystem outputs are not one atomic transaction; rerunning a completed checkpoint regenerates exports without increasing counts. Summary files are regenerable and are not a completion marker.
+- `uv sync`.
+- `MONGODB_URI` in the environment. MongoDB stays bound to loopback on the VM; reach it through an SSH tunnel, for example `-L 127.0.0.1:27018:127.0.0.1:27017`. Never put the URI on the command line or in logs.
+- **Permissions:**
+  - `list-product-ids` needs read access to the source.
+  - The other two commands need write access to the three target collections and `collMod`/`createIndex` on them.
 
-Each JSONL row has `product_id`, `store`, `store_id`, `hostname`, `normalized_options`, `source_url`, and `occurrence_count`. There are no fabricated default rows. Output examples and measured local results are in the [checkpoint report](../../../docs/reports/product_configuration_deduplication.md).
-
-## Validation
+## 1. List distinct product IDs (read only, full scan)
 
 ```bash
-uv run python -m unittest discover -s tests/unit -v
-uv run deduplicate-products --help
-git diff --check
-```
-
-Tests cover ordering, tracking, HTML escaping, empty values, unknown values, distinct stores/products/hosts, malformed URLs, conflicting repeated options, transaction rollback, interruption/resume, changed input rejection, exact limits and MongoDB cursor projection/order. MongoDB cursor tests use mocks; the executed 100K benchmark uses the real local JSON sample. Full-dataset runtime and MongoDB integration performance remain unmeasured.
-
-## Distinct product IDs (MongoDB, read only)
-
-```bash
-# MONGODB_URI points at the SSH-tunnelled loopback server with a read-only user.
-uv run list-product-ids --explain --output-dir data/product_ids/full   # query plan only
+uv run list-product-ids --explain --output-dir data/product_ids/full   # plan only, no scan
 uv run list-product-ids --output-dir data/product_ids/full
 ```
 
-One aggregation scans `countly.summary` once and groups `product_id`, `viewing_product_id` and `cart_products[].product_id` by their string form. Only grouped rows cross the network. Outputs are `product_ids.jsonl` (one row per ID with reference counts per field and BSON types) and `summary.json` (distinct count, query seconds, source identity). There are no source writes or new indexes. Rerunning replaces outputs atomically.
+- **What it scans:** one `$project → $unwind → $group` over `product_id`, `viewing_product_id` and every `cart_products[].product_id`.
+- **Grouping:** values are grouped by their string form, because cart IDs are int32 and event IDs are strings.
+- **Exclusions and transfer:** missing, null and empty values are excluded. Only grouped rows cross the network (client RSS about 49 MB).
+- **Outputs:**
+  - `product_ids.jsonl`: one row per ID with reference counts per field and BSON types.
+  - `summary.json`: distinct count, query time and source identity (namespace and collection UUID).
+- **Reruns:** files are replaced atomically, so a rerun is safe.
+- **Measured:** 19,557 IDs from 41,432,473 documents in 375 s ([report](../../../docs/reports/product_ids_distinct.md)).
 
-## react_data crawl into MongoDB
+## 2. Create the collections (once, idempotent)
 
 ```bash
-# MONGODB_URI points at the SSH-tunnelled server with write access to the new collections.
-uv run setup-product-collections                 # once; idempotent
-uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
-  --delay 0.125 --concurrency 8 [--jitter 0.1] [--limit 50] [--raw-dir data/product_crawl/raw]
+uv run setup-product-collections
 ```
 
-- **Collections:** `setup-product-collections` creates (or re-applies) `countly.products` and `countly.product_option_values`, each with a strict `$jsonSchema` validator, plus indexes `products.status` and `product_option_values.product_id`. Source collections are never modified and nothing is dropped. `crawl-products` refuses to start if the validators are missing or outdated.
-- **Checkpoint = data:** a product is finished when its `products` document has `status` `success` or `not_found`, or `error` after `--max-attempts` (3) attempts. Each run crawls `input IDs − finished IDs`; input order is irrelevant. `--limit N` takes the first N input IDs *before* skipping finished ones, so reruns of one command converge to the same set.
-- **Idempotency:** writes are upserts on fixed `_id`s, in batches of `--batch-size` (200) or every 30 s. `attempts` is computed from the previous document and *set* (not incremented), so replaying a batch after a partial failure gives identical documents. A crash loses at most the unflushed batch, which the next run recrawls.
-- **Stores:** stores are tried in `stores.py` order (English storefronts, USD → EUR → GBP → …). The next store is tried only on 404, up to `--max-stores` (3).
-- **Stopping:**
-  - 401/403/429 or a non-JSON page records `blocked` (not counted as an attempt), flushes and stops with exit 3; 3 consecutive network errors also stop the run.
-  - `--recheck-not-found` crawls `not_found` IDs again (they are otherwise final); combine it with `--max-stores 11` to try every English store. A recheck adds 1 to `attempts`.
-  - `--block-retries N` (0–3, default 0) waits and resumes after a block. The waits are `--block-wait` seconds (minimum 300), then double each time (300 → 600 → 1200 s). Each resume is a new run document; a block after the last retry ends the command with exit 3. Clients stay plain and honest: challenges are never solved or bypassed.
-  - Ctrl+C/SIGTERM stops gracefully: in-flight requests finish and the batch is flushed. A second signal more than 2 s later aborts.
-- **Pacing:** request starts are spaced by `--delay` (minimum 0.125 s, so at most 8 req/s) plus up to `--jitter` random seconds. `--concurrency` (1–8) sets how many products are in flight.
-- **Runs:** each run is a document in the existing `countly.enrichment_runs` with `type: "product_crawl"`, `_id = run_id`, `status` (`running`/`completed`/`stopped`/`failed`/`abandoned`), params, input file name and SHA-256, git SHA, heartbeat, progress and metrics. A second crawl is refused while a run has a heartbeat younger than 120 s; older `running` runs are marked `abandoned`.
-- **Raw JSON** is saved (gzip) to files only with `--raw-dir`.
+- **Creates:** `products` and `product_option_values`, each with a strict `$jsonSchema` validator, plus indexes on `products.status` and `product_option_values.product_id`. On later runs it only re-applies the validator.
+- **Never touches:** source collections are not modified, and nothing is dropped.
+- **Guard:** `crawl-products` refuses to start when either validator is missing or out of date.
 
-### `products` (one document per product ID)
+## 3. Crawl
+
+```bash
+uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
+  --delay 0.2 --jitter 0.1 --concurrency 6 --block-retries 3
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--delay` | 3.0 | Minimum seconds between request *starts*; at least 0.125 (8 req/s hard cap) |
+| `--jitter` | 0 | Extra uniform random seconds added to each gap |
+| `--concurrency` | 1 | Products in flight (1–8). Throughput ≈ `min(1/delay, concurrency/latency)` |
+| `--max-stores` | 3 | Stores tried, in priority order, while the response is 404 |
+| `--batch-size` | 200 | Products per MongoDB write; batches also flush every 30 s |
+| `--max-attempts` | 3 | `error` attempts before an ID is left alone |
+| `--limit` | all | First N input IDs, taken *before* finished IDs are removed |
+| `--recheck-not-found` | off | Treat `not_found` as unfinished (combine with `--max-stores 11`) |
+| `--block-retries` / `--block-wait` | 0 / 300 s | Resume after a block, waiting 300 → 600 → 1200 s (at most 3 times) |
+| `--raw-dir` | off | Also save each raw payload as gzip, for debugging |
+
+**Resuming.** Run the same command again. Nothing needs to be cleaned up first.
+
+**Exit codes**
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every pending ID was processed |
+| `1` | Input, configuration or MongoDB failure |
+| `2` | Another crawl holds the lock |
+| `3` | Stopped after a block, or after 3 consecutive network errors |
+| `130` | Interrupted |
+
+### Status and attempts
+
+| Status | When | Finished? | Counts as an attempt? |
+| --- | --- | --- | --- |
+| `success` | 200 JSON with `product_id` | Yes | Yes |
+| `not_found` | 404 JSON on every store tried | Yes (unless `--recheck-not-found`) | Yes |
+| `error` | Network failure, 5xx, unparseable payload | After `--max-attempts` | Yes |
+| `blocked` | 401/403/429 or a non-JSON 200 (challenge page) | No | **No**: a block says nothing about the product |
+
+## How correctness and safe retries are ensured
+
+**Correctness**
+- **Validated writes:** both collections reject any document that does not match the schema (`validationLevel: strict`, `validationAction: error`).
+- **One shape for every outcome:** the document builder in `react_data.py` is a pure function. It always emits the same key set, with data fields set to null unless the status is `success`. A `not_found` row is therefore explicit, not missing.
+- **Exact prices:** prices are parsed into `Decimal128`. A non-numeric or boolean price turns that product into `error` with a message instead of storing a wrong value.
+- **Source values kept:** `gender: false` stays `false`, and IDs are normalized to strings so they join with events.
+- **Traceable runs:** each run stores its parameters, input file SHA-256, git SHA, metrics and stop reason in `enrichment_runs`.
+
+**Retry and recovery**
+- **The data is the checkpoint.** At start, the crawler loads `_id`, `status` and `attempts` from `products` and crawls `input − finished`. Input order is irrelevant.
+- **Idempotent batches:**
+  - Products are written with `UpdateOne(..., {"$set": doc}, upsert=True)`.
+  - Option rows are written with `ReplaceOne(..., upsert=True)` on a compound `_id`.
+  - `attempts` is computed by the crawler and *set* rather than incremented, so a batch replayed after a partial failure leaves identical documents.
+  - Option rows from older runs of a successfully recrawled product are deleted *after* the new rows are written.
+- **Bounded loss:** a batch is flushed on size, on time, and always in `finally`. A hard kill loses at most the unflushed buffer, and those IDs are simply crawled again.
+- **Graceful stop:**
+  - The first SIGINT/SIGTERM stops new requests, lets in-flight ones finish, flushes, and records the run as `stopped`.
+  - A repeat within 2 s is ignored, because `uv run` forwards one Ctrl+C twice. A later repeat aborts.
+- **Single writer:** a run refuses to start while another `product_crawl` run has a heartbeat younger than 120 s. A stale `running` run is marked `abandoned`.
+- **Blocks:** the crawler stops at once, flushes, and optionally resumes after a doubling wait. It never retries in a tight loop and never bypasses a challenge.
+
+## Collections
+
+### `products` (one document per input product ID)
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `_id`, `product_id` | string | Same form as event `product_id` |
-| `status` | `success` \| `not_found` \| `error` \| `blocked` | |
-| `status_code` | int \| null | HTTP status; null on network errors |
+| `_id`, `product_id` | string | Same form as the event `product_id` |
+| `status`, `status_code` | enum, int \| null | `status_code` is null on network errors |
 | `attempts`, `error` | int, string \| null | |
 | `name`, `sku`, `product_type`, `product_type_value`, `attribute_set`, `type_id`, `collection`, `collection_id`, `category_name`, `currency`, `*_format` | string \| null | As served |
-| `attribute_set_id`, `category` | int \| string \| null | `category` is usually `0`; mixed types observed |
-| `gender` | string \| `false` \| null | `false` is kept as served (mostly wedding rings) |
+| `attribute_set_id`, `category` | int \| string \| null | `category` is usually `0` |
+| `gender` | string \| `false` \| null | `false` kept as served (mostly wedding rings) |
 | `price`, `min_price`, `max_price`, `full_price`, `sale_price` | Decimal128 \| null | Store currency, tax included |
-| `include_tax`, `use_gold_price`, `default_tax`, `current_tax`, `option_count` | bool / number | |
-| `source` | `{host, store_code, url, requested_currency}` | Store that served the data |
+| `include_tax`, `use_gold_price`, `default_tax`, `current_tax`, `option_count` | bool / number \| null | |
+| `source` | `{host, store_code, url, requested_currency}` | The store that produced the final answer |
 | `run_id`, `crawled_at` | string, date (UTC) | |
-
-Data fields are null unless `status == "success"`. For BigQuery, Decimal128 maps to `NUMERIC`. `gender` mixes string and boolean, so its representation must be chosen at export or staging time.
 
 ### `product_option_values` (reference only)
 
-`_id = {product_id, option_id, value_id}`. One row per option value, mapping the event `value_id` to the URL token (`value_sku`) and labels (`value_title`, `value_default_title`, `value_store_title`), with `part_type`, `option_type`, `is_default`, `value_price` (Decimal128) and `price_type`. Options without values (free-text engraving) have `value_id = null`. IDs are strings; cart events store them as ints. Rows of a product that disappear from the site are removed when that product is recrawled successfully.
+- **Key:** `_id = {product_id, option_id, value_id}`, one row per option value. All IDs are strings; cart events store them as ints.
+- **What a row maps:** an event `value_id` to its URL token (`value_sku`) and labels (`value_title`, `value_default_title`, `value_store_title`).
+- **Other fields:** `part_type`, `option_type`, `is_default`, `value_price` (Decimal128) and `price_type`.
+- **Free-text options** such as engraving have `value_id = null`.
+
+### `enrichment_runs` (shared with IP enrichment)
+
+| Field | Content |
+| --- | --- |
+| `type` | `"product_crawl"`. IP enrichment provenance documents have no `type` |
+| `status` | `running`, `completed`, `stopped`, `failed` or `abandoned` |
+| `params` | Includes `block_retry` |
+| Other fields | `input {file, sha256, ids}`, `git_sha`, `started_at`, `heartbeat_at`, `finished_at`, `progress`, `metrics`, `stop_reason` |
+
+## Verifying a run
+
+```javascript
+db.products.countDocuments({})                                 // = number of input IDs
+db.products.aggregate([{$group: {_id: {s: "$status", a: "$attempts"}, n: {$sum: 1}}}])
+db.products.aggregate([{$group: {_id: null, n: {$sum: "$option_count"}}}])   // = distinct (product_id, option_id) pairs
+db.product_option_values.aggregate([{$group: {_id: {p: "$product_id", o: "$option_id"}}}, {$count: "pairs"}])
+db.products.aggregate([{$match: {status: "success"}}, {$group: {_id: {$type: "$price"}, n: {$sum: 1}}}])
+db.enrichment_runs.find({type: "product_crawl"}).sort({started_at: -1}).limit(3)
+```
+
+**Last verified 2026-11-13**
+
+| Check | Result |
+| --- | --- |
+| Products | 19,557 documents, matching the input exactly |
+| Status | 19,121 `success` and 436 `not_found`; no `error` or `blocked` remains |
+| Option rows | 923,294 rows. The 170,256 product–option pairs equal the sum of `option_count` |
+| Price type | All decimal except one `deposit` product with a null `price` |
+| Re-check of `not_found` | 436 × 11 stores, all 404 |
+
+## Limitations
+
+- The catalog and prices are from 2026, not from the 2019 events. Revenue analysis must use event prices.
+- 436 IDs (1.54% of event product references) no longer exist on any English store.
+- One requesting IP; the safe rate depends on Akamai's current policy (see the decision record).
+- Exporting to GCS/BigQuery is not implemented yet. `gender` mixes string and boolean, so its representation must be decided at export or staging time.

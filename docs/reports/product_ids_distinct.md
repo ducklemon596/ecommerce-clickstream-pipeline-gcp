@@ -37,6 +37,6 @@ The collection is 33.5 GB uncompressed (11.3 GB on disk) and has only the `_id_`
 
 ## Notes
 
-- All 12,734 IDs from the local 300K `$sample` pool used in the crawl rate test appear in this list.
-- At the measured single-thread crawl rate (about 0.74 req/s at a 0.5 s delay; see [crawl research](product_crawl_research.md)), crawling 19,557 IDs would take about 7.3 hours, plus extra requests for IDs that fall back to other stores on 404.
+- All 12,734 IDs from the local 300K `$sample` pool used in the early crawl rate tests appear in this list.
+- This list is the input of the product crawl; see the [decision record](../decisions/product_crawl.md) for the outcome.
 - References count occurrences, not events: a cart with two items of one product counts twice.

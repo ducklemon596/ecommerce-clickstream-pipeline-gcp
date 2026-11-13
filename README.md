@@ -1,71 +1,165 @@
-# Glamira Project 5: sample data quality
+# Glamira event pipeline
 
-This project extracts a bounded local sample from a Glamira MongoDB BSON dump and assesses its data quality. The current sample is a **sequential, non-random prefix**: findings describe the sample, not the 41 million-document collection. The quality workflow reads local JSON and does not connect to MongoDB or GCP.
+Batch data engineering on **41.4 million e-commerce tracking events** from Glamira, an online jewellery retailer, collected in October–November 2019. The events lack two dimensions that analysis needs: *where* a visitor was and *what* product they looked at. This repository:
+
+- profiles the data;
+- loads and validates it in MongoDB;
+- enriches it with IP geolocation and product attributes;
+- records how every decision was made and verified.
+
+It answers to three business questions: geographic performance, product and category performance, and time trends. Loading into GCS → BigQuery → dbt → dashboards is the next stage and is **not** part of this repository.
+
+## Results at a glance
+
+| Stage | Result |
+| --- | --- |
+| Source | `countly.summary`: 41,432,473 events restored from a BSON dump (33.5 GB uncompressed) |
+| Data quality (100K sample) | 7 checks: top-level null rates, duplicate IDs and IP/time pairs, timestamps, price signs, currencies, IP syntax |
+| IP geolocation | 3,239,627 unique IPs resolved offline. Coverage: 98.88% of events, 98.82% of unique IPs (target ≥ 80%) |
+| Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
+| Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
+| Product options | 923,294 option-value reference rows for decoding event option IDs |
+
+Measurements are from 2026-11-01 to 2026-11-13 on the project VM. The reports linked below hold the full numbers.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[(BSON dump<br/>.tar.gz)] -->|mongorestore, streamed| M[(MongoDB 8.0<br/>countly.summary)]
+    A -->|sequential 100K prefix| S[extract-sample] --> Q[assess-data-quality] --> R1[DQ reports]
+    M -->|ip only, 50K cursor batches| I[enrich-ip-locations]
+    B[(IP2Location BIN<br/>offline)] --> I
+    I --> IL[(ip_locations)]
+    M -->|1 aggregation| L[list-product-ids] --> C[crawl-products]
+    W[Glamira react_data<br/>robots-allowed JSON] --> C
+    C --> P[(products<br/>product_option_values)]
+    I --> RUN[(enrichment_runs)]
+    C --> RUN
+```
+
+- **Hosting:** MongoDB runs on a Compute Engine VM with its data on a dedicated XFS persistent disk.
+- **Network access:** it binds to loopback only. All access is through an SSH tunnel, and port 27017 is never exposed.
+- **Where code runs:** the enrichment code runs on a workstation or the VM. It talks to MongoDB through a URI in `MONGODB_URI`, and no infrastructure details are hard-coded.
+
+## Pipeline workflow
+
+| # | Stage | Command | Data | Output |
+| --- | --- | --- | --- | --- |
+| 0.1 | Extract a bounded sample from the dump | `uv run extract-sample --limit 100000` | Sequential, non-random prefix | `data/summary_sample.json` + metadata |
+| 0.2–0.3 | Profile and check quality | `uv run assess-data-quality` | Sample | [Data quality report](docs/reports/data_quality_report.md) |
+| 0.4 | Decide scope | — | Evidence | [Scope confirmation](docs/reports/scope_confirmation.md): enrich IPs and products, full data |
+| 1 | Restore and validate the source | `mongorestore` (streamed from the archive) | Full | `countly.summary` |
+| 2 | IP geolocation | `uv run enrich-ip-locations …` | Full, one scan | `ip_locations`; [guide](src/glamira_pipeline/ip_location/README.md) |
+| 3a | Distinct product IDs | `uv run list-product-ids …` | Full, one scan | `product_ids.jsonl`; [report](docs/reports/product_ids_distinct.md) |
+| 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
+| 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
+
+Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
+
+## How decisions were made
+
+Each step started with measurement on a sample, chose the simplest option that the evidence supported, and was then validated on full data.
+
+| Question | Options weighed | Evidence | Decision |
+| --- | --- | --- | --- |
+| Sample or full data? | 100K sample only; full 41M | IPs were 100% syntactically valid in the sample, and the events have product IDs but no product names | Enrich the **full** dataset; use the sample to build and test |
+| IP deduplication strategy | SQLite checkpoint; in-memory `Counter` | Scan took 33m36s with SQLite vs 7m00s with Counter (649 MiB RSS). Per-IP frequencies were identical | **Counter**: restarting a 7-minute scan is cheaper than checkpointing every batch |
+| Cursor batch size | 50K, 100K, 200K (both run orders) | Gains under 5% at the cost of more memory | **50K** |
+| Product data source | HTML pages, Selenium, archives, `react_data` JSON | Selenium was disconnected after 2–4 pages. `react_data` is robots-allowed and returned JSON to a plain client | **`react_data`**, standard-library client, honest User-Agent |
+| Which storefront | 11 English stores | Every product found was on `.com`. A full 11-store recheck of the 436 misses found none | `.com` first, **fall back on 404**, 3 stores by default |
+| Crawl rate | 0.74 → 7.88 req/s ramp | Challenged at 7.4 req/s after earlier test load. No block at 3.8 req/s for 80 min | **About 4 req/s** with jitter; hard cap of 8 req/s |
+| Crawl checkpoint | Sorted-ID cursor, SQLite, the data itself | Concurrent workers finish out of order; a second store would drift from the data | **The written documents are the checkpoint**: crawl `input − finished` |
+| Storage target | Files during the crawl; MongoDB | MongoDB already hosts the source and provides upsert plus schema validation | **MongoDB now**; GCS/BigQuery export as a separate snapshot step |
+
+Details and caveats:
+- [Product crawl decision record](docs/decisions/product_crawl.md)
+- [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
+
+## How data correctness is ensured
+
+- **Measure before assuming.** Missing keys, explicit BSON nulls, empty values and wrong types are counted separately. A missing `order_id` on a product view is expected, not a defect.
+- **Never modify the source.** `countly.summary` is read only. Enrichment writes only to new collections, and nothing is dropped or overwritten without a new target.
+- **Schema validation at write time.** The product collections carry strict `$jsonSchema` validators. The crawler refuses to start if they are missing or out of date.
+- **One explicit row per input.**
+  - Every product ID gets exactly one document, whether `success`, `not_found`, `error` or `blocked`, always with the same key set.
+  - IP lookups keep explicit statuses (`resolved`, `not_public`, `no_match`, `unsupported_ipv6`, `lookup_failed`) with null locations rather than dropping rows.
+- **Exact types.**
+  - Prices are `Decimal128`, never floats.
+  - IDs are normalized to strings so they join with events.
+  - Source quirks such as `gender: false` are kept as served.
+- **Reconciliation, not exit codes.**
+  - Counts are checked after every full run: 19,557 product documents = 19,557 input IDs; option rows reconcile with `option_count`; IP frequencies reconcile with the 41,432,473 scanned events.
+  - IP output is verified in a staging collection before publication.
+- **Provenance.** Each run is recorded in `enrichment_runs`:
+  - its parameters;
+  - an input SHA-256 (or the BIN SHA-256);
+  - the git SHA;
+  - its metrics;
+  - its stop reason.
+
+## How retries stay safe
+
+- **Idempotent writes.** All writes are upserts on deterministic `_id`s. The product crawler *sets* a computed `attempts` value instead of `$inc`, so replaying a half-written batch leaves identical documents.
+- **The data is the checkpoint.** A restarted crawl loads finished IDs from MongoDB and crawls the set difference. Nothing has to be cleaned up before a rerun.
+- **Bounded loss.** Batches flush by size, by time and in `finally`. A hard kill loses at most one unflushed batch, which is simply recrawled.
+- **Failure accounting.** Errors are retried up to `--max-attempts`. Blocks do not count against a product.
+- **Graceful stop.** SIGINT/SIGTERM finishes in-flight requests and flushes before exiting with a distinct exit code.
+- **One writer at a time.** A heartbeat lock refuses a second crawl, and stale runs are marked `abandoned`.
+- **Respectful backoff.** On a block the crawler stops immediately. It may resume after 5, 10 and 20 minutes, and never bypasses a challenge.
+- **IP enrichment** publishes only after verification. A failed run leaves staging and artifacts for inspection, and a fresh run uses a new target.
 
 ## Setup
 
-Install Python and `uv`, put `glamira_ubl_oct2019_nov2019.tar.gz` in the project root, then run:
+**Prerequisites**
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+- For the MongoDB stages, a `MONGODB_URI` environment variable pointing at a tunnelled loopback server.
+- For IP enrichment, an IP2Location BIN file. Neither the BIN nor the URI is committed.
 
 ```bash
 uv sync
-uv run extract-sample --limit 100000
+uv run python -m unittest discover -s tests/unit      # unit tests, no network or database
+uv run extract-sample --limit 100000                  # needs the source .tar.gz in the project root
 uv run assess-data-quality
 ```
 
-If the JSON sample already exists, skip extraction and run the quality command directly. Samples under `data/` are ignored by Git and can contain customer data.
-
-## Extract a sample
-
-The extractor reads `dump/countly/summary.bson` from the compressed tar stream, one document at a time, and stops at the requested limit (1–100,000). It creates:
-
-- `data/summary_sample.json`: a Canonical Extended JSON array, preserving BSON types.
-- `data/summary_sample.metadata.json`: source, selection method, counts, size, and extraction time.
-
-Use `uv run extract-sample --help` for `--archive`, `--limit`, and `--output`. The output path must end in `.json`; metadata uses the same stem. Rerunning replaces those two outputs after successful extraction. A malformed or missing source returns a nonzero exit and staged files are cleaned up. Existing BSON sample files are left untouched.
-
-## Assess data quality
-
 ```bash
-uv run assess-data-quality --sample data/summary_sample.json --max-documents 100000
+# Example tunnel from a workstation to the VM (names are placeholders)
+gcloud compute ssh <vm-name> --zone <zone> -- -N -L 127.0.0.1:27018:127.0.0.1:27017
+export MONGODB_URI='mongodb://<user>:<password>@127.0.0.1:27018/?authSource=admin&directConnection=true'
 ```
 
-The command streams up to 100,000 JSON documents in one pass. Duplicate detection keeps hashes of identifiers and IP/timestamp pairs without retaining raw IP addresses or full records. If the input exceeds the cap, the report says only a prefix was assessed. Use `--output-dir` to choose the directory for the reports.
+`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite.
 
-The command creates [a short summary](docs/reports/data_quality_report.md) and six reports under `docs/reports/data_quality/`:
+## Repository layout
 
-- `nulls.md`: top-level missing and explicit-null rates, with >50% flagged for review.
-- `duplicates.md`: `_id` and IP/timestamp duplicate counts, group sizes, mixed event types, and IPv4/IPv6/invalid-address breakdowns.
-- `timestamps.md`: UTC timestamp range and future values, plus local time field coverage and wall-clock range (timezone unknown).
-- `revenue.md`: leading negative signs in `checkout_success` item prices.
-- `currencies.md`: top-level and cart-item currency values.
-- `ip_addresses.md`: completeness and IPv4/IPv6 syntax counts.
-
-The checks treat missing keys, BSON nulls, and empty values separately. Sparse event-specific fields are not automatically defects; IP/timestamp duplicates do not prove duplicate events. Numeric `time_stamp` values are interpreted as Unix seconds in UTC, an assumption to confirm with the data producer. Checkout prices occur inside `cart_products`; order-level revenue and unusually large prices remain unassessed until price semantics, locale parsing, and thresholds are confirmed. Currency symbols may be ambiguous.
-
-Input errors return a nonzero exit before reports are generated. The report writer stages all seven files before publishing each one; the summary is published last. The generated reports can be replaced by rerunning the command.
-
-## Historical event-field specification
-
-The earlier [event-field specification](docs/specifications/event_type_expected_fields.preview.md) is retained as a historical observation of the same local sample. Its former profiler and supporting metrics have been removed.
-
-## Tests
-
-```bash
-uv run python -m unittest discover -s tests/unit -v
+```text
+src/glamira_pipeline/
+├── sampling/       # streamed BSON → Extended JSON sample extraction
+├── quality/        # data-quality checks and report rendering
+├── ip_location/    # Counter scan, offline lookup, verified publication
+├── products/       # distinct IDs, react_data crawl, MongoDB store
+└── provenance.py   # file and collection identities for run records
+docs/
+├── reports/        # measured results (data quality, scope, product IDs)
+└── decisions/      # decision records
+tests/unit/         # synthetic fixtures; no live services
 ```
 
-## IP location enrichment
+## Security and cost
 
-The maintained workflow uses an unsorted MongoDB cursor with requested batch size **50K**, an in-memory IP Counter, durable counter output, offline BIN lookup and verified staging publication. SQLite checkpoint and benchmark implementations have been retired.
+- **Network:** MongoDB is reachable only through the tunnel.
+- **Never committed:**
+  - credentials and `.env`;
+  - raw dumps, samples and generated data (`data/` is ignored);
+  - IP lists (raw IPs are treated as personal data).
+- **VM cost:** the VM is stopped whenever no stage is running; persistent disks still incur storage cost.
 
-See the [IP Location README](src/glamira_pipeline/ip_location/README.md) for sample/full commands, schema, recovery limitations and measured comparisons explaining the choice.
+## Limitations and next steps
 
-## Product configurations
-
-`uv run deduplicate-products` streams JSON or MongoDB events, extracts observed URL configurations from `view_product_detail`, and deduplicates them on disk with SQLite. It retains product ID, store ID and hostname, counts occurrences and exports JSONL. No web crawling or default inference occurs.
-
-The same pass inventories `current_url` across all event types, exporting evidence-backed matches and unverified candidates separately. It never reads `referrer_url`.
-
-See the [product workflow](src/glamira_pipeline/products/README.md) for local/VM commands and recovery rules, and the [100K validation report](docs/reports/product_configuration_deduplication.md) for measured results.
-
-The [product configuration research](analysis/product_configuration_research/README.md) investigates all 27 event types, with measured counterexamples and proposed reconstruction rules awaiting review. It includes selection timing, quality representation, recommendation ownership, and cart-option mapping limitations.
+- **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
+- **Catalog dates:** the product catalog and prices are from 2026, not 2019. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
+- **Next:**
+  - Export snapshots to GCS and load them into BigQuery, deciding the `gender` representation there.
+  - Write a data dictionary of all collections.
+  - Use least-privilege MongoDB users for profiling and crawling.

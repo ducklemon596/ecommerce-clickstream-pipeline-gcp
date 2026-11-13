@@ -10,6 +10,7 @@ from bson import BSON
 from pymongo import MongoClient, ReplaceOne
 from pymongo.uri_parser import parse_uri
 
+from glamira_pipeline.provenance import file_sha256
 from glamira_pipeline.sampling.json_reader import iter_json_documents
 
 MAX_SAMPLE = 10_000
@@ -17,15 +18,6 @@ SOURCE_COLLECTION = "events"
 METADATA_COLLECTION = "sample_metadata"
 RESULT_COLLECTION = "ip_locations"
 RUN_COLLECTION = "enrichment_runs"
-
-
-def file_sha256(path: Path) -> str:
-    """Return a streamed SHA-256 for a local input file; use to identify immutable inputs."""
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def local_server_identity(uri: str) -> list[list]:

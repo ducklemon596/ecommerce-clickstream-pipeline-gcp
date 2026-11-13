@@ -8,7 +8,8 @@ from pymongo.collection import Collection
 from glamira_pipeline.ip_location.counter import SCAN_BATCH, scan_in_memory, persist_counter
 from glamira_pipeline.ip_location.lookup import bin_metadata
 from glamira_pipeline.ip_location.output import lookup_and_upsert, verify_staging, publish_collection
-from glamira_pipeline.ip_location.source import RUN_COLLECTION, file_sha256
+from glamira_pipeline.ip_location.source import RUN_COLLECTION
+from glamira_pipeline.provenance import file_sha256
 
 
 def _bin_info(path: Path) -> dict:

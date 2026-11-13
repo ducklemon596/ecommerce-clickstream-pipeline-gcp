@@ -9,12 +9,13 @@ import time
 
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
+
 from glamira_pipeline.products.catalog_ids import aggregation_pipeline, run_distinct
 from glamira_pipeline.products.crawl import CrawlStopped, crawl, read_product_ids
 from glamira_pipeline.products.mongo_store import (MongoProductStore, ensure_collections, finish_run,
                                                     has_validators, start_run)
-from glamira_pipeline.products.source import json_identity
 from glamira_pipeline.products.stores import STORES
+from glamira_pipeline.provenance import file_sha256
 
 # Hard rate ceiling for react_data requests: at most 8 request starts per second.
 MIN_DELAY_S = 0.125
@@ -108,8 +109,7 @@ def crawl_main() -> None:
                "block_retries", "block_wait", "recheck_not_found")}
     try:
         ids = read_product_ids(args.ids_file)
-        identity = json_identity(args.ids_file)
-        input_info = {"file": args.ids_file.name, "sha256": identity["sha256"], "ids": len(ids)}
+        input_info = {"file": args.ids_file.name, "sha256": file_sha256(args.ids_file), "ids": len(ids)}
     except (OSError, ValueError) as exc:
         parser.exit(1, f"Cannot read --ids-file ({type(exc).__name__}: {exc}).\n")
     waits = block_waits(args.block_wait, args.block_retries)

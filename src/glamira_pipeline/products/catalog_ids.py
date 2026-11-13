@@ -17,7 +17,7 @@ from collections.abc import Iterable
 
 from pymongo.collection import Collection
 
-from glamira_pipeline.products.source import mongo_identity
+from glamira_pipeline.provenance import mongo_collection_identity
 
 # Event fields that carry a product reference, with the BSON path to read.
 REFERENCE_FIELDS = ("product_id", "viewing_product_id", "cart_products.product_id")
@@ -119,7 +119,7 @@ def run_distinct(collection: Collection, output_dir: Path, *, batch_size: int = 
         cursor.close()
     seconds = time.perf_counter() - started
     summary = {**totals, "query_seconds": round(seconds, 3), "started_at": started_at.isoformat(),
-               "source": mongo_identity(collection),
+               "source": mongo_collection_identity(collection),
                "server_version": collection.database.client.server_info().get("version"),
                "reference_fields": list(REFERENCE_FIELDS),
                "notes": "references count occurrences; null/missing/empty references excluded"}

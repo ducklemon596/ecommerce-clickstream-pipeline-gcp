@@ -8,7 +8,7 @@ Derive country and region from event IP addresses to support geographic analysis
 
 ## Product enrichment
 
-Build product details from product identifiers and relevant web URLs to support analysis by product name and category. The 27,993 sampled `view_product_detail` events contain `product_id`, but no `product_name` was observed in those events. Validate a small crawl before scaling, respect website access rules, and record missing or failed matches. See the [event-field snapshot](../specifications/event_type_expected_fields.preview.md).
+Build product details from product identifiers and relevant web URLs to support analysis by product name and category. The 27,993 sampled `view_product_detail` events contain `product_id`, but no `product_name` was observed in those events. Validate a small crawl before scaling, respect website access rules, and record missing or failed matches. Product attributes therefore have to come from an external source.
 
 ## Data volume
 

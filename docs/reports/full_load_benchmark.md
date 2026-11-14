@@ -23,8 +23,8 @@ The data disk holds only `dbPath`, and the boot disk had 11 GB free. **The 33.5 
 | Stage | What it does | Wall time | Throughput | CPU (user+sys) |
 | --- | --- | ---: | ---: | ---: |
 | Read archive | Read 5.5 GB `.tar.gz` from `pd-balanced` | 31 s | 180 MB/s | 5 s |
-| Decompress, Python `gzip` | `tarfile r|gz` → `/dev/null` | 174 s | 193 MB/s | 174 s |
-| Decompress, `pigz` | `tar` + `pigz` → `/dev/null` | 130 s | 259 MB/s | 265 s |
+| Decompress, Python `gzip` | `tarfile` (mode `r\|gz`) → `/dev/null`; no splitting | 174 s | 193 MB/s | 174 s |
+| Decompress, `pigz` | `tar` + `pigz` → `/dev/null`; no splitting | 130 s | 259 MB/s | 265 s |
 | Split, raw | `pigz` + cut into 100K-doc batches by the 4-byte length prefix | 254 s | 163K docs/s | 417 s |
 | Split + decode | as above, plus `bson.decode` of every document | 463 s | 90K docs/s | 622 s |
 | Split + gzip batches | as above (raw), plus `gzip -6` of every batch (old loader) | 961 s | 43K docs/s | 1,104 s |

@@ -66,6 +66,8 @@ def reconcile_main() -> None:
     parser.add_argument("--sample-size", type=int, default=1_000)
     parser.add_argument("--seed", type=int, default=20191001)
     args = parser.parse_args()
+    if args.sample_size < 1:
+        parser.error("--sample-size must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         with client_from_env() as client:

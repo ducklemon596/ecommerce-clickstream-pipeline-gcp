@@ -1,7 +1,7 @@
 [project]
 name = "glamira-pipeline"
 version = "0.1.0"
-description = "Add your description here"
+description = "Profiling, MongoDB loading and enrichment of 41M Glamira tracking events"
 readme = "README.md"
 authors = [
     { name = "ducklemon596", email = "thienquang050906@gmai.com" }

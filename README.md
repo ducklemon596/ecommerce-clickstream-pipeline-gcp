@@ -57,7 +57,7 @@ flowchart LR
 | 3a | Distinct product IDs | `uv run list-product-ids …` | Full, one scan | `product_ids.jsonl`; [report](docs/reports/product_ids_distinct.md) |
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
-| 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | `docs/reports/schema_profile.md` (counts and type names, no values) |
+| 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 

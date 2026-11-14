@@ -218,7 +218,7 @@ def bench_collection(name: str):
 def stage_insert(args: argparse.Namespace) -> dict:
     client, coll = bench_collection(args.collection)
     params = {"collection": args.collection, "workers": args.workers, "batch_docs": args.batch_docs,
-              "upsert": args.upsert, "source": str(args.source)}
+              "upsert": args.upsert, "source": str(args.source), "pigz": args.pigz}
     meter = Meter("upsert" if args.upsert else "insert", params)
 
     def write(batch: list[bytes]) -> int:
@@ -231,7 +231,7 @@ def stage_insert(args: argparse.Namespace) -> dict:
 
     pending: set = set()
     try:
-        with ThreadPoolExecutor(args.workers) as pool, open_source(args.source) as stream:
+        with ThreadPoolExecutor(args.workers) as pool, open_source(args.source, pigz=args.pigz) as stream:
             for batch in iter_batches(stream, args.batch_docs, max_bytes=MAX_BSON_SIZE):
                 if len(pending) >= args.workers * 2:  # bounded in-flight batches
                     done, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -257,19 +257,27 @@ def stage_restore(args: argparse.Namespace) -> dict:
         os.chmod(config.name, 0o600)
         config.write(f"uri: {json.dumps(uri)}\n")
     meter = Meter("restore", {"collection": args.collection, "workers": args.workers, "source": str(args.source)})
+    streamed = args.source.suffix != ".bson"
+    command = ["mongorestore", f"--config={config.name}", f"--db={BENCH_DATABASE}",
+               f"--collection={args.collection}", f"--numInsertionWorkersPerCollection={args.workers}",
+               "--noIndexRestore", "-" if streamed else str(args.source)]
     try:
-        proc = subprocess.run(
-            ["mongorestore", f"--config={config.name}", f"--db={BENCH_DATABASE}",
-             f"--collection={args.collection}", f"--numInsertionWorkersPerCollection={args.workers}",
-             "--noIndexRestore", str(args.source)],
-            capture_output=True, text=True)
+        if streamed:  # tar + pigz piped into mongorestore stdin, as the original restore ran
+            tar = subprocess.Popen(["tar", "--use-compress-program=pigz", "-xOf", str(args.source), MEMBER],
+                                   stdout=subprocess.PIPE)
+            proc = subprocess.run(command, stdin=tar.stdout, capture_output=True, text=True)
+            tar.stdout.close()
+            if tar.wait() != 0:
+                raise SystemExit(f"tar/pigz exited with {tar.returncode}")
+        else:
+            proc = subprocess.run(command, capture_output=True, text=True)
     finally:
         os.unlink(config.name)
     if proc.returncode:
         print(proc.stderr[-2000:], file=sys.stderr)
         raise SystemExit(f"mongorestore exited with {proc.returncode}")
     summary = [line for line in proc.stderr.splitlines() if "document(s)" in line]
-    meter.bytes = args.source.stat().st_size
+    meter.bytes = 0 if streamed else args.source.stat().st_size
     with client_from_env() as check:
         stored = check[BENCH_DATABASE][args.collection].estimated_document_count()
     meter.docs = stored
@@ -301,13 +309,14 @@ def main() -> None:
     p.set_defaults(func=stage_split)
 
     p = sub.add_parser("restore")
-    p.add_argument("--source", type=Path, required=True, help="extracted .bson file")
+    p.add_argument("--source", type=Path, required=True, help=".bson file or .tar.gz (streamed via pigz)")
     p.add_argument("--collection", required=True)
     p.add_argument("--workers", type=int, default=1)
     p.set_defaults(func=stage_restore)
 
     p = sub.add_parser("insert")
-    p.add_argument("--source", type=Path, required=True, help=".bson file")
+    p.add_argument("--source", type=Path, required=True, help=".bson file or .tar.gz archive")
+    p.add_argument("--pigz", action="store_true", help="decompress a .tar.gz source with tar + pigz")
     p.add_argument("--collection", required=True)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--batch-docs", type=int, default=1_000)

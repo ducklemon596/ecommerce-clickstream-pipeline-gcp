@@ -2,7 +2,6 @@
 import argparse
 import json
 import logging
-import os
 from pathlib import Path
 import subprocess
 import time
@@ -15,6 +14,7 @@ from glamira_pipeline.products.crawl import CrawlStopped, crawl, read_product_id
 from glamira_pipeline.products.mongo_store import (MongoProductStore, ensure_collections, finish_run,
                                                     has_validators, start_run)
 from glamira_pipeline.products.stores import STORES
+from glamira_pipeline.mongo import client_from_env
 from glamira_pipeline.provenance import file_sha256
 
 # Hard rate ceiling for react_data requests: at most 8 request starts per second.
@@ -22,11 +22,11 @@ MIN_DELAY_S = 0.125
 
 
 def _mongo_client(parser: argparse.ArgumentParser) -> MongoClient:
-    """Connect with MONGODB_URI (e.g. through an SSH tunnel); never log the URI."""
-    uri = os.environ.get("MONGODB_URI")
-    if not uri:
-        parser.error("set MONGODB_URI in the environment")
-    return MongoClient(uri, directConnection=True, serverSelectionTimeoutMS=10000)
+    """Connect with ``MONGODB_URI``; exit with a usage error when it is unset or not loopback."""
+    try:
+        return client_from_env()
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def list_ids_main() -> None:

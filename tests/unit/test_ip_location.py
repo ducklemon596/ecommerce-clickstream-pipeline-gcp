@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from glamira_pipeline.ip_location.lookup import bin_metadata, event_address, lookup_address
-from glamira_pipeline.ip_location.source import local_client
+from glamira_pipeline.mongo import client_from_env, connect
 
 
 class Reader:
@@ -44,11 +44,18 @@ class IpLocationTests(unittest.TestCase):
 
     def test_loopback_uri_only(self):
         with self.assertRaises(ValueError):
-            local_client("mongodb://example.com:27017/")
+            connect("mongodb://example.com:27017/")
         with self.assertRaises(ValueError):
-            local_client("mongodb+srv://example.com/")
-        client = local_client("mongodb://127.0.0.1:27017/")
+            connect("mongodb+srv://example.com/")
+        client = connect("mongodb://127.0.0.1:27017/")
         client.close()
+
+    def test_uri_comes_from_the_environment(self):
+        with self.assertRaises(ValueError):
+            client_from_env({})
+        with self.assertRaises(ValueError):
+            client_from_env({"MONGODB_URI": "mongodb://db.example.com:27017/"})
+        client_from_env({"MONGODB_URI": "mongodb://127.0.0.1:27018/?authSource=admin"}).close()
 
     def test_real_bin_header_if_available(self):
         path = Path("IP-COUNTRY-REGION-CITY.BIN")

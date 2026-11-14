@@ -1,4 +1,4 @@
-"""Local MongoDB access and deterministic sample preparation."""
+"""Deterministic local sample preparation for IP enrichment tests."""
 from __future__ import annotations
 
 import hashlib
@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from bson import BSON
-from pymongo import MongoClient, ReplaceOne
-from pymongo.uri_parser import parse_uri
+from pymongo import ReplaceOne
 
 from glamira_pipeline.provenance import file_sha256
 from glamira_pipeline.sampling.json_reader import iter_json_documents
@@ -18,23 +17,6 @@ SOURCE_COLLECTION = "events"
 METADATA_COLLECTION = "sample_metadata"
 RESULT_COLLECTION = "ip_locations"
 RUN_COLLECTION = "enrichment_runs"
-
-
-def local_server_identity(uri: str) -> list[list]:
-    """Return local host/port pairs from a URI without storing its credentials."""
-    if not uri.startswith("mongodb://"):
-        raise ValueError("Only local mongodb:// connections are supported")
-    parsed = parse_uri(uri, warn=False)
-    if any(host.lower() not in {"localhost", "127.0.0.1", "::1"} for host, _ in parsed["nodelist"]):
-        raise ValueError("MongoDB host must be local for this sample workflow")
-    return [[host.lower(), port] for host, port in parsed["nodelist"]]
-
-
-def local_client(uri: str) -> MongoClient:
-    """Create a local-only MongoDB client from uri; reject remote hosts and SRV URLs."""
-    local_server_identity(uri)
-    # Avoid replica-set discovery redirecting a local-only sample to remote hosts.
-    return MongoClient(uri, directConnection=True, serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
 
 
 def sample_record(row_id: int, event: dict) -> dict:

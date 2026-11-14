@@ -1,6 +1,7 @@
 """Coordinate one Counter scan, durable artifact, lookup, and verified publication."""
 from __future__ import annotations
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import time
 import uuid
@@ -10,6 +11,8 @@ from glamira_pipeline.ip_location.lookup import bin_metadata
 from glamira_pipeline.ip_location.output import lookup_and_upsert, verify_staging, publish_collection
 from glamira_pipeline.ip_location.source import RUN_COLLECTION
 from glamira_pipeline.provenance import file_sha256
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _bin_info(path: Path) -> dict:
@@ -60,14 +63,19 @@ def enrich_collection(source: Collection, target: str, bin_path: Path,
     source_uuid = bytes(identity['info']['uuid']).hex()
     output_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
     staging = source.database[f'{target}_staging_{uuid.uuid4().hex}']
+    LOGGER.info('scanning %s (%s)', source.full_name, f'limit {limit:,}' if limit else 'full collection')
     started = time.monotonic()
     scan = scan_in_memory(source, limit)
     scan_seconds = time.monotonic() - started
+    LOGGER.info('scan done in %.0f s: %s events, %s unique valid IPs', scan_seconds,
+                f'{scan.events:,}', f'{len(scan.addresses):,}')
     persist_started = time.monotonic()
     artifact = output_dir / 'ip_counter.jsonl'
     manifest = persist_counter(scan, artifact, source.full_name, source_uuid, info)
     persistence_seconds = time.monotonic() - persist_started
+    LOGGER.info('counter persisted; looking up IPs into %s', staging.name)
     statuses, lookup_seconds = _lookup_summary(artifact, staging, bin_path, info, len(scan.addresses))
+    LOGGER.info('lookup verified in %.0f s; publishing %s', lookup_seconds, target)
     resolved_events = statuses['status_events'].get('resolved', 0)
     resolved_ips = statuses['status_unique_ips'].get('resolved', 0)
     report = {

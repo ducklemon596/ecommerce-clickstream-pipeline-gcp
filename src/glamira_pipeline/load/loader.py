@@ -246,6 +246,10 @@ def _stream_into(archive: Path, member: str, target: Collection, options: LoadOp
             if batch is None:
                 break
             progress.docs_seen += len(batch.docs)
+            # Checked for skipped batches too: skipping a long prefix on resume can take
+            # minutes, and the heartbeat must stay younger than HEARTBEAT_TIMEOUT.
+            if time.monotonic() - last_checkpoint >= CHECKPOINT_EVERY_S:
+                checkpoint()
             if batch.index < resume_below:  # already in the target according to the checkpoint
                 progress.docs_skipped += len(batch.docs)
                 continue
@@ -257,8 +261,6 @@ def _stream_into(archive: Path, member: str, target: Collection, options: LoadOp
             pending[pool.submit(write, batch)] = batch
             progress.docs_sent += len(batch.docs)
             metrics.record_progress(progress.docs_seen)
-            if time.monotonic() - last_checkpoint >= CHECKPOINT_EVERY_S:
-                checkpoint()
         # On a stop or failure the stream is left unread; open_member terminates the decompressor.
         if pending:
             collect(wait(pending).done)

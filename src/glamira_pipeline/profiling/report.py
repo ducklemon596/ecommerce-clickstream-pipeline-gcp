@@ -49,7 +49,7 @@ def profile_to_dict(profile: SchemaProfile, metadata: dict[str, Any]) -> dict[st
 
 def _type_section(name: str, tp: TypeProfile, total: int) -> list[str]:
     lines = [f"## `{_cell(name)}`", "",
-             f"{tp.events:,} sampled events ({_rate(tp.events, total)} of the sample).", ""]
+             f"{tp.events:,} events ({_rate(tp.events, total)} of profiled documents).", ""]
     bounds = [f"{label} {count:,}" for label, count in (("paths dropped", tp.dropped_paths),
                                                         ("arrays truncated", tp.truncated_arrays),
                                                         ("values beyond depth limit", tp.depth_limited)) if count]
@@ -80,7 +80,7 @@ def render_markdown(profile: SchemaProfile, metadata: dict[str, Any]) -> str:
         "null; *Empty* = empty/whitespace string, empty array or empty object. Present includes null and "
         "empty values. Event types are labelled by `collection`; missing or non-string values are "
         "`<missing>`.", "",
-        "| Event type | Sampled events | Share | Paths |", "|---|---:|---:|---:|",
+        "| Event type | Events | Share | Paths |", "|---|---:|---:|---:|",
     ]
     ordered = sorted(profile.types.items(), key=lambda kv: (-kv[1].events, kv[0]))
     lines += [f"| `{_cell(name)}` | {tp.events:,} | {_rate(tp.events, total)} | {len(tp.paths):,} |"

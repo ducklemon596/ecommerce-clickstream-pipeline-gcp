@@ -1,4 +1,4 @@
-"""Profile field presence, nulls and BSON types per event type from a random MongoDB sample."""
+"""Profile field presence, nulls and BSON types per event type, from a full scan or a random sample."""
 from __future__ import annotations
 
 import argparse
@@ -17,20 +17,24 @@ from glamira_pipeline.provenance import git_sha, mongo_collection_identity
 from glamira_pipeline.sampling.mongo_sample import MAX_SAMPLE, sample_documents, uses_random_cursor
 
 log = logging.getLogger(__name__)
-PROGRESS_EVERY = 50_000
+PROGRESS_EVERY = 1_000_000
+SCAN_BATCH = 1_000
 
 
 def main() -> None:
-    """Sample the collection with ``$sample``, profile it and write Markdown + JSON."""
+    """Scan (``--full``) or ``$sample`` the collection, profile it and write Markdown + JSON."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", default="countly")
     parser.add_argument("--collection", default="summary")
-    parser.add_argument("--size", type=int, default=100_000, help=f"Documents to sample (1–{MAX_SAMPLE:,})")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--full", action="store_true",
+                      help="Read every document once with an unsorted cursor (population counts)")
+    mode.add_argument("--size", type=int, default=100_000, help=f"Documents to sample (1–{MAX_SAMPLE:,})")
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT_DIR / "schema_profile.md")
     parser.add_argument("--json", type=Path, default=PROJECT_ROOT / "data/profiling/schema_profile.json",
                         help="Machine-readable counts (no field values)")
     args = parser.parse_args()
-    if not 1 <= args.size <= MAX_SAMPLE:
+    if not args.full and not 1 <= args.size <= MAX_SAMPLE:
         parser.error(f"--size must be between 1 and {MAX_SAMPLE:,}")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -42,14 +46,16 @@ def main() -> None:
         with client:
             collection = client[args.database][args.collection]
             estimate = collection.estimated_document_count()
-            if not uses_random_cursor(args.size, estimate):
+            if not args.full and not uses_random_cursor(args.size, estimate):
                 parser.exit(2, f"--size {args.size:,} is not below 5% of ~{estimate:,} documents; "
                                "$sample would scan and sort the whole collection. Use a smaller size.\n")
             identity = mongo_collection_identity(collection)
             observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             started = time.monotonic()
             profile = SchemaProfile()
-            for document in sample_documents(collection, args.size):
+            documents = (collection.find({}, batch_size=SCAN_BATCH) if args.full
+                         else sample_documents(collection, args.size))
+            for document in documents:
                 profile.observe(document)
                 if profile.documents % PROGRESS_EVERY == 0:
                     log.info("profiled %s documents", f"{profile.documents:,}")
@@ -59,9 +65,12 @@ def main() -> None:
 
     metadata = {
         "namespace": identity["namespace"], "collection_uuid": identity["uuid"],
-        "observed_at": observed_at, "requested": args.size, "collection_estimate": estimate,
-        "method": f"MongoDB `$sample` (size {args.size:,}, pseudo-random cursor, no seed; "
-                  "documents may repeat and runs are not reproducible).",
+        "observed_at": observed_at, "requested": estimate if args.full else args.size,
+        "collection_estimate": estimate,
+        "method": ("Full scan: every document read once with an unsorted `find({})` cursor."
+                   if args.full else
+                   f"MongoDB `$sample` (size {args.size:,}, pseudo-random cursor, no seed; "
+                   "documents may repeat and runs are not reproducible)."),
         "elapsed_s": round(elapsed, 1), "git_sha": git_sha(),
     }
     write_outputs(profile, metadata, args.report, args.json)

@@ -42,7 +42,7 @@ The [report](../../../docs/reports/full_load_benchmark.md#6-results-of-the-produ
 
 - `uv sync`. `pigz` is optional (`sudo apt install pigz`); without it the loader falls back to Python's `tarfile`, which takes about a third longer to decompress (174 s vs 130 s).
 - `MONGODB_URI` in the environment (see `.env.example`). Only loopback hosts are accepted: on the VM use `127.0.0.1:27017`.
-- **Permissions:** `insert` and `createCollection` on the target database, plus `find`/`update` on `load_runs` in the same database. `reconcile-summary` also needs `find` on the target.
+- **Permissions:** `readWrite` on the target database. `load-summary` creates the target and writes run records to `load_runs`; `reconcile-summary` only reads the target and writes its result to `load_runs`.
 - **Disk:** no extracted file is written. The target needs about 12 GB for 41.4 M documents.
 
 ## 1. Load
@@ -63,7 +63,7 @@ uv run load-summary --archive ~/glamira-source/glamira_ubl_oct2019_nov2019.tar.g
 **What it refuses**
 - **Non-empty target:** a target that already holds documents and has no resumable run for this source is rejected.
 - **Recreated target:** if the target's UUID changed since the run being resumed, resume is rejected.
-- **Concurrent writer:** a target that another run is writing to (heartbeat younger than 120 s) is rejected.
+- **Concurrent writer:** a target that another run is writing to (heartbeat younger than 120 s) is rejected. A partial unique index on `load_runs` allows only one `running` run per target, so two loaders started at the same moment cannot both pass.
 
 **What it never does:** drop or replace data.
 

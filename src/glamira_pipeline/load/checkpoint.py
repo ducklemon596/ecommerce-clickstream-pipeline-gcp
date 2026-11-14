@@ -11,6 +11,7 @@ import heapq
 import uuid
 
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 from pymongo.write_concern import WriteConcern
 
 RUNS_COLLECTION = "load_runs"
@@ -66,13 +67,23 @@ class RunStore:
 
     def start(self, identity: dict, *, source: dict, target: dict, params: dict,
               resumed_from: str | None, progress: dict, git_sha: str | None) -> str:
+        """Insert a ``running`` run document and return its id.
+
+        A partial unique index allows only one ``running`` load per target, so two
+        loaders that both pass ``check_lock`` cannot both start: the second gets RunLocked.
+        """
+        self.runs.create_index([("target.namespace", 1)], name="one_running_load_per_target", unique=True,
+                               partialFilterExpression={"type": RUN_TYPE, "status": "running"})
         run_id = utcnow().strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
         now = utcnow()
-        self.runs.insert_one({"_id": run_id, "type": RUN_TYPE, "status": "running", "identity": identity,
-                              "source": source, "target": target, "params": params,
-                              "resumed_from": resumed_from, "git_sha": git_sha, "started_at": now,
-                              "heartbeat_at": now, "finished_at": None, "progress": progress,
-                              "metrics": None, "error": None})
+        try:
+            self.runs.insert_one({"_id": run_id, "type": RUN_TYPE, "status": "running", "identity": identity,
+                                  "source": source, "target": target, "params": params,
+                                  "resumed_from": resumed_from, "git_sha": git_sha, "started_at": now,
+                                  "heartbeat_at": now, "finished_at": None, "progress": progress,
+                                  "metrics": None, "error": None})
+        except DuplicateKeyError as exc:
+            raise RunLocked(f"another run started loading {target['namespace']}") from exc
         return run_id
 
     def checkpoint(self, run_id: str, progress: dict) -> None:

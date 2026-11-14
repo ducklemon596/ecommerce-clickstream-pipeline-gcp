@@ -15,7 +15,7 @@ import uuid
 
 from bson import BSON, ObjectId
 
-from glamira_pipeline.load.checkpoint import RUNS_COLLECTION
+from glamira_pipeline.load.checkpoint import RUNS_COLLECTION, RunLocked, RunStore
 from glamira_pipeline.load.loader import LoadError, LoadOptions, load_summary
 from glamira_pipeline.load.reconcile import reconcile
 from glamira_pipeline.mongo import connect
@@ -73,6 +73,14 @@ class LoadMongoIntegrationTests(unittest.TestCase):
         self.db.summary.insert_one({"_id": 1})
         with self.assertRaisesRegex(LoadError, "already has documents"):
             load_summary(self.archive, MEMBER, self.db, "summary", self.options)
+
+    def test_only_one_running_load_per_target(self):
+        store = RunStore(self.db)
+        args = dict(source={}, target={"namespace": "x.summary"}, params={}, resumed_from=None,
+                    progress={}, git_sha=None)
+        store.start({"n": 1}, **args)
+        with self.assertRaises(RunLocked):
+            store.start({"n": 2}, **args)
 
     def test_reconcile_detects_match_and_missing_documents(self):
         load_summary(self.archive, MEMBER, self.db, "summary", self.options)

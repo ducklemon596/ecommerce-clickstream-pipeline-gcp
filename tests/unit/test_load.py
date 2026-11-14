@@ -11,6 +11,7 @@ from pymongo.errors import BulkWriteError
 
 from glamira_pipeline.load.bson_stream import iter_batches, iter_documents, open_member, pigz_available
 from glamira_pipeline.load.checkpoint import Watermark
+from glamira_pipeline.load.reconcile import MISSING, event_type_label, scan_source
 from glamira_pipeline.load.writer import insert_batch
 
 MEMBER = "dump/countly/summary.bson"
@@ -89,6 +90,26 @@ class StreamTests(unittest.TestCase):
             make_archive(archive, b"".join(docs(20_000)))
             with open_member(archive, MEMBER, pigz=True) as reader:
                 next(iter_documents(reader))
+
+
+class ReconcileSourceTests(unittest.TestCase):
+    def test_missing_null_and_non_string_event_types_get_the_server_side_labels(self):
+        self.assertEqual(event_type_label("view"), "view")
+        self.assertEqual(event_type_label(None), MISSING)
+        self.assertEqual(event_type_label(7), "<int>")
+
+    def test_scan_counts_every_document_and_keeps_a_seeded_sample(self):
+        source = [BSON.encode({"_id": 1, "collection": "view"}), BSON.encode({"_id": 2, "collection": None}),
+                  BSON.encode({"_id": 3}), BSON.encode({"_id": 4, "collection": 5})] * 25
+        with TemporaryDirectory() as directory:
+            archive = Path(directory) / "dump.tar.gz"
+            make_archive(archive, b"".join(source))
+            total, per_type, sample = scan_source(archive, MEMBER, sample_size=10, seed=1, pigz=False)
+            again = scan_source(archive, MEMBER, sample_size=10, seed=1, pigz=False)[2]
+        self.assertEqual(total, 100)
+        self.assertEqual(per_type, {"view": 25, MISSING: 50, "<int>": 25})
+        self.assertEqual(len(sample), 10)
+        self.assertEqual(sample, again)
 
 
 class WatermarkTests(unittest.TestCase):

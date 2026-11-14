@@ -32,6 +32,17 @@ RECONCILE_TYPE = "summary_reconcile"
 MISSING = "<missing>"
 
 
+def event_type_label(value: object) -> str:
+    """Label a ``collection`` value the same way on both sides of the comparison.
+
+    A missing field and an explicit null both become ``<missing>`` (matching
+    ``$ifNull`` on the server); a non-string value becomes ``<type name>``.
+    """
+    if value is None:
+        return MISSING
+    return value if isinstance(value, str) else f"<{type(value).__name__}>"
+
+
 def scan_source(archive: Path, member: str, *, sample_size: int, seed: int,
                 pigz: bool | None = None) -> tuple[int, Counter, list[bytes]]:
     """Stream the source once: total count, count per ``collection`` value, and a reservoir sample."""
@@ -41,8 +52,7 @@ def scan_source(archive: Path, member: str, *, sample_size: int, seed: int,
     total = 0
     with open_member(archive, member, pigz=pigz) as reader:
         for raw in iter_documents(reader):
-            event_type = bson.decode(raw).get("collection", MISSING)
-            per_type[event_type if isinstance(event_type, str) else f"<{type(event_type).__name__}>"] += 1
+            per_type[event_type_label(bson.decode(raw).get("collection"))] += 1
             if len(sample) < sample_size:
                 sample.append(raw)
             else:
@@ -56,8 +66,10 @@ def scan_source(archive: Path, member: str, *, sample_size: int, seed: int,
 def target_counts(db: Database, collection: str) -> Counter:
     """Count target documents per ``collection`` value with one server-side ``$group``."""
     pipeline = [{"$group": {"_id": {"$ifNull": ["$collection", MISSING]}, "n": {"$sum": 1}}}]
-    return Counter({row["_id"] if isinstance(row["_id"], str) else f"<{type(row['_id']).__name__}>": row["n"]
-                    for row in db[collection].aggregate(pipeline, allowDiskUse=True)})
+    counts: Counter = Counter()
+    for row in db[collection].aggregate(pipeline, allowDiskUse=True):
+        counts[event_type_label(row["_id"])] += row["n"]
+    return counts
 
 
 def compare_sample(db: Database, collection: str, sample: list[bytes]) -> dict:

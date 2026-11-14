@@ -57,6 +57,7 @@ flowchart LR
 | 3a | Distinct product IDs | `uv run list-product-ids …` | Full, one scan | `product_ids.jsonl`; [report](docs/reports/product_ids_distinct.md) |
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
+| 4 | Schema per event type | `uv run profile-schema --size 100000` | Random `$sample` (no seed), read only | `docs/reports/schema_profile.md` (counts and type names, no values) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -172,7 +173,8 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 ```text
 src/glamira_pipeline/
 ├── load/           # streamed, resumable full load and reconciliation
-├── sampling/       # streamed BSON → Extended JSON sample extraction
+├── sampling/       # sequential BSON sample extraction, MongoDB $sample
+├── profiling/      # field presence, nulls and BSON types per event type
 ├── quality/        # data-quality checks and report rendering
 ├── ip_location/    # Counter scan, offline lookup, verified publication
 ├── products/       # distinct IDs, react_data crawl, MongoDB store

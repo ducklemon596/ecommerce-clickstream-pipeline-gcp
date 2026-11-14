@@ -113,8 +113,8 @@ Details and caveats:
 
 **Prerequisites**
 - Python 3.10+ and [uv](https://docs.astral.sh/uv/).
-- For the MongoDB stages, a `MONGODB_URI` environment variable pointing at a tunnelled loopback server.
-- For IP enrichment, an IP2Location BIN file. Neither the BIN nor the URI is committed.
+- For the MongoDB stages, `MONGODB_URI` pointing at a **loopback** server: `127.0.0.1:27017` on the VM, or an SSH tunnel port from a workstation. Copy [`.env.example`](.env.example) to `.env`; every command refuses a missing or non-loopback URI.
+- For IP enrichment, an IP2Location BIN file. Neither the BIN nor `.env` is committed.
 
 ```bash
 uv sync
@@ -123,13 +123,40 @@ uv run extract-sample --limit 100000                  # needs the source .tar.gz
 uv run assess-data-quality
 ```
 
+`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite.
+
+## Running on the VM (full data)
+
+Every MongoDB command runs unchanged on the VM against the full `countly.summary`; only `MONGODB_URI` differs (port 27017 instead of the tunnel port).
+
 ```bash
-# Example tunnel from a workstation to the VM (names are placeholders)
-gcloud compute ssh <vm-name> --zone <zone> -- -N -L 127.0.0.1:27018:127.0.0.1:27017
-export MONGODB_URI='mongodb://<user>:<password>@127.0.0.1:27018/?authSource=admin&directConnection=true'
+# Once: code and environment (no data or secrets in the repository)
+git clone <repo-url> glamira-pipeline && cd glamira-pipeline
+uv sync --frozen
+cp .env.example .env && chmod 600 .env      # then edit the user and password
+set -a && . ./.env && set +a
+
+# Long stages: run inside tmux so an SSH disconnect does not end them
+tmux new -s glamira
+
+uv run enrich-ip-locations --target ip_locations_$(date +%Y%m%d) \
+  --bin /path/to/IP-COUNTRY-REGION-CITY.BIN \
+  --output-dir /data/glamira/ip_location/$(date +%Y%m%d)        # ~15 min; target must be new
+uv run list-product-ids --output-dir data/product_ids/full     # ~6 min, read only
+uv run setup-product-collections
+uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
+  --delay 0.2 --jitter 0.1 --concurrency 6 --block-retries 3   # ~80 min; rerun to resume
 ```
 
-`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite.
+| Concern | How it is handled |
+| --- | --- |
+| Defaults | `--database countly` and `--source summary` are the defaults; sample runs name their database explicitly |
+| Resources | The IP scan holds unique IPs in memory (about 750 MiB measured); the other stages stream with bounded memory. Write artifacts to the data disk, not the boot disk |
+| Disconnects | Run inside `tmux`. The crawl also treats `SIGHUP` like Ctrl+C: it finishes in-flight requests, flushes and records the run as `stopped` |
+| Failures | Every command exits nonzero with the failed check in the message. IP enrichment keeps staging and artifacts; the crawl resumes by rerunning the same command |
+| Logs | Commands log stage progress to stderr; redirect with `2>&1 | tee run.log` to keep a copy. Logs never contain the URI or raw IPs |
+| Crawl egress | Requests leave from the VM's IP. Akamai may treat a cloud IP differently from the workstation IP that was measured, so start with `--limit 200` and keep the backoff enabled |
+| Cost | Stop the VM when no stage runs; persistent disks are still billed |
 
 ## Repository layout
 

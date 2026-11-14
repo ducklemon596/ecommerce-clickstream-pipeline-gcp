@@ -14,7 +14,7 @@ flowchart LR
 
 ## Run
 
-Install with `uv sync`. Supply a protected `MONGODB_URI` environment variable pointing to loopback MongoDB. A loopback URI may be an SSH tunnel; for local tests use a genuinely local server. MongoDB permissions must allow reading the source and collection metadata, writing staging/provenance, aggregation and collection rename. No API is used.
+Install with `uv sync`. Both commands require `MONGODB_URI` pointing to loopback MongoDB (on the VM, or through an SSH tunnel); non-loopback and SRV URIs are refused. For local tests use a genuinely local server, e.g. `MONGODB_URI=mongodb://127.0.0.1:27017/`. MongoDB permissions must allow reading the source and collection metadata, writing staging/provenance, aggregation and collection rename. No API is used.
 
 ```bash
 # Local: seed a sequential sample, then enrich it.
@@ -23,8 +23,8 @@ uv run enrich-ip-locations --database glamira_ip_sample --source events \
   --bin IP-COUNTRY-REGION-CITY.BIN --limit 1000 \
   --output-dir data/ip_location/run_sample
 
-# Full dataset: execute only with authorization for the intended MongoDB server.
-uv run enrich-ip-locations --database countly --source summary \
+# Full dataset (defaults: --database countly --source summary --target ip_locations).
+uv run enrich-ip-locations \
   --bin /path/to/IP-COUNTRY-REGION-CITY.BIN \
   --output-dir /path/to/private/new-run
 ```

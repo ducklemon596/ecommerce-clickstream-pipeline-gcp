@@ -27,7 +27,8 @@ flowchart LR
 ## Prerequisites
 
 - `uv sync`.
-- `MONGODB_URI` in the environment. MongoDB stays bound to loopback on the VM; reach it through an SSH tunnel, for example `-L 127.0.0.1:27018:127.0.0.1:27017`. Never put the URI on the command line or in logs.
+- `MONGODB_URI` in the environment (see `.env.example`). MongoDB stays bound to loopback: on the VM use `127.0.0.1:27017`; from a workstation use an SSH tunnel such as `-L 127.0.0.1:27018:127.0.0.1:27017`. Non-loopback URIs are refused. Never put the URI on the command line or in logs.
+- On the VM, run long crawls inside `tmux`. An SSH hangup (`SIGHUP`) is handled like Ctrl+C: in-flight requests finish, the batch is flushed and the run is recorded as `stopped`.
 - **Permissions:**
   - `list-product-ids` needs read access to the source.
   - The other two commands need write access to the three target collections and `collMod`/`createIndex` on them.

@@ -20,6 +20,8 @@ enrich-ip-locations = "glamira_pipeline.ip_location.cli:enrich_main"
 list-product-ids = "glamira_pipeline.products.cli:list_ids_main"
 crawl-products = "glamira_pipeline.products.cli:crawl_main"
 setup-product-collections = "glamira_pipeline.products.cli:setup_collections_main"
+load-summary = "glamira_pipeline.load.cli:load_main"
+reconcile-summary = "glamira_pipeline.load.cli:reconcile_main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

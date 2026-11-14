@@ -245,7 +245,7 @@ async def _crawl(sink, selected, pending, already_finished, previous_attempts, *
     first_signal: list[float] = []
 
     def on_signal(signum: int) -> None:
-        """First signal: stop gracefully (finish in-flight, flush). A repeat >2 s later aborts.
+        """First SIGINT/SIGTERM/SIGHUP: stop gracefully (finish in-flight, flush). A repeat >2 s later aborts.
 
         Repeats within 2 s are ignored because ``uv run`` and the terminal can
         both deliver one Ctrl+C to the process.
@@ -259,7 +259,8 @@ async def _crawl(sink, selected, pending, already_finished, previous_attempts, *
             LOGGER.warning("%s received again: aborting without waiting", name)
             main_task.cancel()
 
-    for signum in (signal.SIGINT, signal.SIGTERM):
+    # SIGHUP arrives when the SSH session running the crawl on the VM disconnects.
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:
             loop.add_signal_handler(signum, on_signal, signum)
             handled.append(signum)

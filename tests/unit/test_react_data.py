@@ -1,6 +1,7 @@
 """react_data documents, response classification and crawl checkpoint rules (offline)."""
 from datetime import datetime, timezone
 from decimal import Decimal
+import asyncio
 import json
 import random
 import unittest
@@ -243,6 +244,23 @@ class CrawlTests(unittest.TestCase):
         crawl(store, ["1"], stores=(US,), fetcher=bad, sleep=no_sleep, clock=lambda: 0.0)
         self.assertEqual(store.products["1"]["status"], "error")
         self.assertIn("parse error", store.products["1"]["error"])
+
+    def test_hangup_stops_gracefully_and_flushes(self):
+        import os
+        import signal
+        store, base = MemoryStore(), fake_fetcher({})[0]
+
+        def hangup_on_first(url):
+            if not store.products and not getattr(hangup_on_first, "sent", False):
+                hangup_on_first.sent = True
+                os.kill(os.getpid(), signal.SIGHUP)  # e.g. the SSH session on the VM closed
+            return base(url)
+        with self.assertRaises(CrawlStopped) as stopped:
+            crawl(store, [str(i) for i in range(1, 50)], stores=(US,), fetcher=hangup_on_first,
+                  sleep=asyncio.sleep, rng=random.Random(1), delay_s=0.01)
+        self.assertIn("SIGHUP", str(stopped.exception))
+        self.assertGreaterEqual(len(store.products), 1)  # in-flight result was flushed
+        self.assertLess(len(store.products), 49)
 
     def test_pacing_adds_jitter_between_request_starts(self):
         for concurrency in (1, 3):

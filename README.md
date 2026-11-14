@@ -14,19 +14,21 @@ It answers to three business questions: geographic performance, product and cate
 | Stage | Result |
 | --- | --- |
 | Source | `countly.summary`: 41,432,473 events restored from a BSON dump (33.5 GB uncompressed) |
+| Full load | `load-summary` loads all 41,432,473 events in 8 min 41 s and resumes after a crash. Measured in a separate benchmark database; the existing `countly.summary` was restored earlier with `mongorestore` (14 min 51 s, 0 failures). `reconcile-summary` confirms totals, all 27 event-type counts, and 1,000 / 1,000 byte-identical sampled documents |
 | Data quality (100K sample) | 7 checks: top-level null rates, duplicate IDs and IP/time pairs, timestamps, price signs, currencies, IP syntax |
 | IP geolocation | 3,239,627 unique IPs resolved offline. Coverage: 98.88% of events, 98.82% of unique IPs (target ≥ 80%) |
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
 
-Measurements are from 2026-11-01 to 2026-11-13 on the project VM. The reports linked below hold the full numbers.
+Measurements are from 2026-11-01 to 2026-11-14 on the project VM. The reports linked below hold the full numbers.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[(BSON dump<br/>.tar.gz)] -->|mongorestore, streamed| M[(MongoDB 8.0<br/>countly.summary)]
+    A[(BSON dump<br/>.tar.gz)] -->|load-summary: pigz stream,<br/>raw insert_many ×4| M[(MongoDB 8.0<br/>countly.summary)]
+    A --> V[reconcile-summary] --> M
     A -->|sequential 100K prefix| S[extract-sample] --> Q[assess-data-quality] --> R1[DQ reports]
     M -->|ip only, 50K cursor batches| I[enrich-ip-locations]
     B[(IP2Location BIN<br/>offline)] --> I
@@ -49,7 +51,8 @@ flowchart LR
 | 0.1 | Extract a bounded sample from the dump | `uv run extract-sample --limit 100000` | Sequential, non-random prefix | `data/summary_sample.json` + metadata |
 | 0.2–0.3 | Profile and check quality | `uv run assess-data-quality` | Sample | [Data quality report](docs/reports/data_quality_report.md) |
 | 0.4 | Decide scope | — | Evidence | [Scope confirmation](docs/reports/scope_confirmation.md): enrich IPs and products, full data |
-| 1 | Restore and validate the source | `mongorestore` (streamed from the archive) | Full | `countly.summary` |
+| 1 | Load the source | `uv run load-summary --archive … --database countly --collection summary` | Full, streamed | `countly.summary`, run record in `load_runs`; [guide](src/glamira_pipeline/load/README.md) |
+| 1b | Verify the load | `uv run reconcile-summary --archive … --database countly --collection summary` | Full scan + 1,000-doc sample | `summary_reconcile` record; [benchmark report](docs/reports/full_load_benchmark.md) |
 | 2 | IP geolocation | `uv run enrich-ip-locations …` | Full, one scan | `ip_locations`; [guide](src/glamira_pipeline/ip_location/README.md) |
 | 3a | Distinct product IDs | `uv run list-product-ids …` | Full, one scan | `product_ids.jsonl`; [report](docs/reports/product_ids_distinct.md) |
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
@@ -63,6 +66,7 @@ Each step started with measurement on a sample, chose the simplest option that t
 
 | Question | Options weighed | Evidence | Decision |
 | --- | --- | --- | --- |
+| How to load 41M events | Upsert per document; gzip chunks + staging + `$merge`; `mongorestore`; raw `insert_many` | Measured each part on the full file: upsert 57 min, re-gzip +12 min, `mongorestore` 12 min, raw `insert_many` ×4 under 9 min. Duplicate-key errors already make a replay safe | **Raw `insert_many`** with a batch watermark and a reconciliation step; [report](docs/reports/full_load_benchmark.md) |
 | Sample or full data? | 100K sample only; full 41M | IPs were 100% syntactically valid in the sample, and the events have product IDs but no product names | Enrich the **full** dataset; use the sample to build and test |
 | IP deduplication strategy | SQLite checkpoint; in-memory `Counter` | Scan took 33m36s with SQLite vs 7m00s with Counter (649 MiB RSS). Per-IP frequencies were identical | **Counter**: restarting a 7-minute scan is cheaper than checkpointing every batch |
 | Cursor batch size | 50K, 100K, 200K (both run orders) | Gains under 5% at the cost of more memory | **50K** |
@@ -139,6 +143,11 @@ set -a && . ./.env && set +a
 # Long stages: run inside tmux so an SSH disconnect does not end them
 tmux new -s glamira
 
+uv run load-summary --archive /path/to/glamira_ubl_oct2019_nov2019.tar.gz \
+  --database countly --collection summary                       # ~9 min; rerun to resume
+uv run reconcile-summary --archive /path/to/glamira_ubl_oct2019_nov2019.tar.gz \
+  --database countly --collection summary                       # ~12 min, read only
+
 uv run enrich-ip-locations --target ip_locations_$(date +%Y%m%d) \
   --bin /path/to/IP-COUNTRY-REGION-CITY.BIN \
   --output-dir /data/glamira/ip_location/$(date +%Y%m%d)        # ~15 min; target must be new
@@ -162,15 +171,17 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 
 ```text
 src/glamira_pipeline/
+├── load/           # streamed, resumable full load and reconciliation
 ├── sampling/       # streamed BSON → Extended JSON sample extraction
 ├── quality/        # data-quality checks and report rendering
 ├── ip_location/    # Counter scan, offline lookup, verified publication
 ├── products/       # distinct IDs, react_data crawl, MongoDB store
 └── provenance.py   # file and collection identities for run records
 docs/
-├── reports/        # measured results (data quality, scope, product IDs)
+├── reports/        # measured results (data quality, scope, product IDs, full load)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
+tests/integration/  # need a disposable local MongoDB
 ```
 
 ## Security and cost

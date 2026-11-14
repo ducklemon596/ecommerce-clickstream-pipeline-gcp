@@ -7,29 +7,14 @@ import json
 from pathlib import Path
 import tarfile
 from tempfile import TemporaryDirectory
-from typing import BinaryIO
 
 from bson import BSON, json_util
 from bson.errors import InvalidBSON
 
 from glamira_pipeline.config import DEFAULT_ARCHIVE, DEFAULT_SAMPLE, MAX_DOCUMENTS
+from glamira_pipeline.load.bson_stream import DEFAULT_MEMBER, iter_documents, open_member
 
-MEMBER = "dump/countly/summary.bson"
-MAX_BSON_SIZE = 16 * 1024 * 1024
-
-
-def read_exact(stream: BinaryIO, size: int) -> bytes:
-    """Read up to `size` bytes from a binary stream, handling short reads.
-
-    Returns the available bytes, which may be shorter at end of stream.
-    """
-    chunks = bytearray()
-    while len(chunks) < size:
-        chunk = stream.read(size - len(chunks))
-        if not chunk:
-            break
-        chunks.extend(chunk)
-    return bytes(chunks)
+MEMBER = DEFAULT_MEMBER
 
 
 def extract_sample(archive_path: Path, output: Path, limit: int) -> tuple[Path, Path]:
@@ -62,37 +47,20 @@ def extract_sample(archive_path: Path, output: Path, limit: int) -> tuple[Path, 
     with TemporaryDirectory(prefix=".sample-", dir=output.parent) as temporary_dir:
         temporary_paths = tuple(Path(temporary_dir) / path.name for path in targets)
         count = 0
-        with tarfile.open(archive_path, mode="r|gz") as archive:
-            for member in archive:
-                if member.name == MEMBER and member.isfile():
-                    member_file = archive.extractfile(member)
+        with open_member(archive_path, MEMBER) as member_file, \
+                temporary_paths[0].open("w", encoding="utf-8") as json_file:
+            json_file.write("[\n")
+            for raw in iter_documents(member_file):
+                document = BSON(raw).decode()
+                encoded = json_util.dumps(document, json_options=json_util.CANONICAL_JSON_OPTIONS,
+                                          ensure_ascii=False, indent=2)
+                if count:
+                    json_file.write(",\n")
+                json_file.write(encoded)
+                count += 1
+                if count >= limit:
                     break
-            else:
-                raise ValueError(f"Could not find {MEMBER} in {archive_path}")
-            if member_file is None:
-                raise ValueError(f"Could not read {MEMBER}")
-            with member_file, temporary_paths[0].open("w", encoding="utf-8") as json_file:
-                json_file.write("[\n")
-                while count < limit:
-                    prefix = read_exact(member_file, 4)
-                    if not prefix:
-                        break
-                    if len(prefix) != 4:
-                        raise ValueError("Truncated BSON document length")
-                    # BSON starts with its total byte length, including this prefix.
-                    size = int.from_bytes(prefix, "little", signed=True)
-                    if not 5 <= size <= MAX_BSON_SIZE:
-                        raise ValueError(f"Invalid BSON document size: {size}")
-                    body = read_exact(member_file, size - 4)
-                    if len(body) != size - 4:
-                        raise ValueError("Truncated BSON document")
-                    document = BSON(prefix + body).decode()
-                    encoded = json_util.dumps(document, json_options=json_util.CANONICAL_JSON_OPTIONS, ensure_ascii=False, indent=2)
-                    if count:
-                        json_file.write(",\n")
-                    json_file.write(encoded)
-                    count += 1
-                json_file.write("\n]\n")
+            json_file.write("\n]\n")
         if not count:
             raise ValueError("Source BSON member contains no documents")
         metadata = {
@@ -122,7 +90,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         outputs = extract_sample(args.archive, args.output, args.limit)
-    except (OSError, ValueError, tarfile.TarError, InvalidBSON) as exc:
+    except (OSError, ValueError, RuntimeError, tarfile.TarError, InvalidBSON) as exc:
         parser.exit(1, f"Extraction failed: {exc}\n")
     for path in outputs:
         print(f"Wrote {path} ({path.stat().st_size:,} bytes)")

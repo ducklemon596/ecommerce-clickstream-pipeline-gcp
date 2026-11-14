@@ -3,7 +3,6 @@ import argparse
 import json
 import logging
 from pathlib import Path
-import subprocess
 import time
 
 from pymongo import MongoClient
@@ -15,7 +14,7 @@ from glamira_pipeline.products.mongo_store import (MongoProductStore, ensure_col
                                                     has_validators, start_run)
 from glamira_pipeline.products.stores import STORES
 from glamira_pipeline.mongo import client_from_env
-from glamira_pipeline.provenance import file_sha256
+from glamira_pipeline.provenance import file_sha256, git_sha
 
 # Hard rate ceiling for react_data requests: at most 8 request starts per second.
 MIN_DELAY_S = 0.125
@@ -66,15 +65,6 @@ def setup_collections_main() -> None:
         parser.exit(1, f"Collection setup failed ({type(exc).__name__}: {exc}).\n")
 
 
-def _git_sha() -> str | None:
-    """Return the checked-out commit for run provenance, or None outside a git checkout."""
-    try:
-        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                              check=True, cwd=Path(__file__).parent).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
-
-
 def crawl_main() -> None:
     """Crawl react_data into MongoDB in idempotent batches; resume skips finished IDs."""
     parser = argparse.ArgumentParser(description=crawl_main.__doc__)
@@ -122,7 +112,7 @@ def crawl_main() -> None:
             for attempt in range(len(waits) + 1):
                 try:
                     run_id = start_run(db, params={**params, "block_retry": attempt},
-                                       input_info=input_info, git_sha=_git_sha())
+                                       input_info=input_info, git_sha=git_sha())
                 except RuntimeError as exc:
                     parser.exit(2, f"Refusing to start: {exc}.\n")
                 print(f"run_id {run_id}")

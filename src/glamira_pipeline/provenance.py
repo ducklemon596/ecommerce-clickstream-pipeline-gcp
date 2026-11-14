@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import subprocess
 
 from pymongo.collection import Collection
 
@@ -32,3 +33,12 @@ def mongo_collection_identity(collection: Collection) -> dict:
     return {"kind": "mongodb", "namespace": collection.full_name,
             "endpoint": list(collection.database.client.address),
             "uuid": bytes(info["info"]["uuid"]).hex()}
+
+
+def git_sha() -> str | None:
+    """Return the checked-out commit for run provenance, or None outside a git checkout."""
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True, cwd=Path(__file__).parent).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None

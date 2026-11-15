@@ -1,4 +1,4 @@
-# Data Dictionary — Glamira events and enrichment
+# Data Dictionary - Glamira events and enrichment
 
 This dictionary covers every MongoDB collection the project reads or creates in the `countly` database: the raw events (`summary`) and the enrichment outputs (`ip_locations`, `products`, `product_option_values`, `enrichment_runs`).
 
@@ -21,14 +21,11 @@ This dictionary covers every MongoDB collection the project reads or creates in 
 | Collection | Grain | Documents | Created by | Key |
 |---|---|---:|---|---|
 | `summary` | One tracking event | 41,432,473 | `mongorestore` of the source BSON dump | `_id` (ObjectId) |
-| `ip_locations` | One unique valid IP address | 3,239,627 at the 2026-11-04 run | `enrich-ip-locations` | `_id` = normalized IP |
+| `ip_locations` | One unique valid IP address | 3,239,627 | `enrich-ip-locations` | `_id` = normalized IP |
 | `products` | One distinct product ID seen in events | 19,557 | `crawl-products` | `_id` = product ID string |
 | `product_option_values` | One option value of one product | 923,294 | `crawl-products` | `_id` = `{product_id, option_id, value_id}` |
-| `enrichment_runs` | One enrichment run or lookup database | small | IP enrichment and product crawl | `_id` |
 
-The full-load tooling writes its run records to `load_runs`. That collection was **not present** in `countly` on 2026-11-14: the restored `summary` came from the earlier `mongorestore`, not from `load-summary`.
-
-## `summary` — raw events
+## `summary` - raw events
 
 27 event types share 15 common fields. Every other field belongs to a fixed set of event types, and inside those types it is always present. So a "missing" field outside its event types is expected, not a defect.
 
@@ -149,7 +146,7 @@ Present in `view_shopping_cart`, `checkout` and `checkout_success`; 457,696 even
 
 Revenue can only be derived from `checkout_success.cart_products[]`, because only those lines have price and currency. Top-level `price` on `add_to_cart_action` is the displayed price at the moment of adding, not a sale.
 
-## `ip_locations` — IP geolocation
+## `ip_locations` - IP geolocation
 
 One document per unique **valid** IP in `summary.ip`, resolved offline with an IP2Location DB3 BIN file (`IP-COUNTRY-REGION-CITY`, dated 2016-11-29). Written with idempotent upserts into a staging collection, verified, then renamed into place.
 
@@ -168,7 +165,7 @@ Measured at the full run on 2026-11-04: 3,239,627 unique valid IPs; 98.88% of ev
 
 **Limitations.** Locations are estimates from a 2016 database applied to later events. The BIN has no IPv6 ranges. Confirm the licence before redistributing the output.
 
-## `products` — product attributes
+## `products` - product attributes
 
 One document per distinct product ID referenced in `summary` (`product_id`, `viewing_product_id`, `cart_products[].product_id`), fetched from the Glamira `react_data` JSON endpoint in 2026. A MongoDB `$jsonSchema` validator (strict, error) enforces the types below. Every key exists in every document, whatever the crawl outcome.
 
@@ -200,7 +197,7 @@ One document per distinct product ID referenced in `summary` (`product_id`, `vie
 
 **Coverage.** 385,273 of 25,054,210 event product references (1.54%) point to the 436 `not_found` products. Crawled prices describe the 2026 catalogue and must not be used as 2019–2020 transaction prices.
 
-## `product_option_values` — option reference
+## `product_option_values` - option reference
 
 One row per option value of each successfully crawled product (923,294 rows, 170,256 product–option pairs). It is used to decode `option[]` and `cart_products[].option[]` IDs in events. Validated by `$jsonSchema`. Indexed on `product_id`.
 
@@ -219,15 +216,6 @@ One row per option value of each successfully crawled product (923,294 rows, 170
 | `value_price` | decimal | Yes | Surcharge or price of the value; whether it is additive is **not verified** |
 | `price_type` | string | Yes | Pricing mode of the value |
 | `run_id`, `crawled_at` | string, date | No | Provenance |
-
-## `enrichment_runs` — provenance
-
-Two kinds of documents share this collection:
-
-| Kind | Identified by | Fields |
-|---|---|---|
-| IP lookup database | no `type`; `_id` = BIN SHA-256 | `database_id`, `source` (BIN filename), `database_date`, `database_edition`, `database_sha256`, `processed_at` |
-| Product crawl run | `type = "product_crawl"`; `_id` = run ID | `status` (`running`, `completed`, `stopped`, `failed`, `abandoned`), `params`, `input {file, sha256, ids}`, `git_sha`, `started_at`, `heartbeat_at`, `finished_at`, `progress`, `metrics`, `stop_reason` |
 
 ## Relationships
 

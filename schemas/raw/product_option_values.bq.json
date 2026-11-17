@@ -1,0 +1,110 @@
+[
+  {
+    "name": "product_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Product ID"
+  },
+  {
+    "name": "option_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Option ID; joins events option[].option_id"
+  },
+  {
+    "name": "value_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Value ID; null for free-text options such as engraving"
+  },
+  {
+    "name": "part_type",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Part, e.g. stone1, alloy"
+  },
+  {
+    "name": "option_type",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "alloy, stone, engraving_font, ..."
+  },
+  {
+    "name": "option_title",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Option title in the store language"
+  },
+  {
+    "name": "option_default_title",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Option default title"
+  },
+  {
+    "name": "is_require",
+    "mode": "NULLABLE",
+    "type": "BOOLEAN",
+    "description": "Option is mandatory; source 0/1"
+  },
+  {
+    "name": "sort_order",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Display order as served"
+  },
+  {
+    "name": "value_sku",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Value token used in product URLs"
+  },
+  {
+    "name": "value_title",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Value title"
+  },
+  {
+    "name": "value_default_title",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Value default title"
+  },
+  {
+    "name": "value_store_title",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Value title in the store"
+  },
+  {
+    "name": "is_default",
+    "mode": "NULLABLE",
+    "type": "BOOLEAN",
+    "description": "Default value; source bool or 0"
+  },
+  {
+    "name": "value_price",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Price surcharge of the value"
+  },
+  {
+    "name": "price_type",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "fixed, percent or abs"
+  },
+  {
+    "name": "run_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Crawl run ID"
+  },
+  {
+    "name": "crawled_at",
+    "mode": "REQUIRED",
+    "type": "TIMESTAMP",
+    "description": "Crawl time (UTC)"
+  }
+]

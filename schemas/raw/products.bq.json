@@ -1,0 +1,238 @@
+[
+  {
+    "name": "product_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Product ID, same form as events.product_id"
+  },
+  {
+    "name": "status",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "success, not_found, error or blocked"
+  },
+  {
+    "name": "status_code",
+    "mode": "NULLABLE",
+    "type": "INTEGER",
+    "description": "HTTP status; null on a network error"
+  },
+  {
+    "name": "attempts",
+    "mode": "REQUIRED",
+    "type": "INTEGER",
+    "description": "Crawl attempts"
+  },
+  {
+    "name": "error",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Error message of a failed attempt"
+  },
+  {
+    "name": "name",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Product name"
+  },
+  {
+    "name": "sku",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "SKU"
+  },
+  {
+    "name": "attribute_set_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Attribute set ID"
+  },
+  {
+    "name": "attribute_set",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Attribute set name"
+  },
+  {
+    "name": "type_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "simple, product_set, virtual or deposit"
+  },
+  {
+    "name": "product_type",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "ring, wedding_ring, pendant, ..."
+  },
+  {
+    "name": "product_type_value",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Product type code"
+  },
+  {
+    "name": "collection",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Collection name"
+  },
+  {
+    "name": "collection_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Collection ID"
+  },
+  {
+    "name": "category",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Category ID; usually '0'"
+  },
+  {
+    "name": "category_name",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Category name"
+  },
+  {
+    "name": "gender",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "women, men, or 'false' when the site sends false"
+  },
+  {
+    "name": "price",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Price in currency, tax included"
+  },
+  {
+    "name": "min_price",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Lowest configurable price"
+  },
+  {
+    "name": "max_price",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Highest configurable price"
+  },
+  {
+    "name": "min_price_format",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Formatted lowest price"
+  },
+  {
+    "name": "max_price_format",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Formatted highest price"
+  },
+  {
+    "name": "full_price",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "List price"
+  },
+  {
+    "name": "sale_price",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Sale price"
+  },
+  {
+    "name": "full_price_format",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Formatted list price"
+  },
+  {
+    "name": "sale_price_format",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Formatted sale price"
+  },
+  {
+    "name": "currency",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "ISO currency code, e.g. USD"
+  },
+  {
+    "name": "include_tax",
+    "mode": "NULLABLE",
+    "type": "BOOLEAN",
+    "description": "Whether prices include tax"
+  },
+  {
+    "name": "default_tax",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Default tax rate"
+  },
+  {
+    "name": "current_tax",
+    "mode": "NULLABLE",
+    "type": "NUMERIC",
+    "description": "Current tax rate"
+  },
+  {
+    "name": "use_gold_price",
+    "mode": "NULLABLE",
+    "type": "BOOLEAN",
+    "description": "Price follows the gold price"
+  },
+  {
+    "name": "option_count",
+    "mode": "NULLABLE",
+    "type": "INTEGER",
+    "description": "Number of configurable options"
+  },
+  {
+    "name": "source",
+    "mode": "REQUIRED",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "host",
+        "mode": "REQUIRED",
+        "type": "STRING",
+        "description": "Storefront host that answered"
+      },
+      {
+        "name": "store_code",
+        "mode": "REQUIRED",
+        "type": "STRING",
+        "description": "Storefront code"
+      },
+      {
+        "name": "url",
+        "mode": "REQUIRED",
+        "type": "STRING",
+        "description": "Requested react_data URL"
+      },
+      {
+        "name": "requested_currency",
+        "mode": "REQUIRED",
+        "type": "STRING",
+        "description": "Currency requested"
+      }
+    ],
+    "description": "Storefront request that produced the row"
+  },
+  {
+    "name": "run_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Crawl run ID (enrichment_runs)"
+  },
+  {
+    "name": "crawled_at",
+    "mode": "REQUIRED",
+    "type": "TIMESTAMP",
+    "description": "Crawl time (UTC)"
+  }
+]

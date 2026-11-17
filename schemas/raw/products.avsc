@@ -1,0 +1,362 @@
+{
+  "type": "record",
+  "name": "Product",
+  "namespace": "glamira.raw",
+  "doc": "Product attributes crawled from Glamira react_data (2026 catalog), one row per event product ID.",
+  "fields": [
+    {
+      "name": "product_id",
+      "doc": "Product ID, same form as events.product_id",
+      "type": "string"
+    },
+    {
+      "name": "status",
+      "doc": "success, not_found, error or blocked",
+      "type": "string"
+    },
+    {
+      "name": "status_code",
+      "doc": "HTTP status; null on a network error",
+      "type": [
+        "null",
+        "long"
+      ],
+      "default": null
+    },
+    {
+      "name": "attempts",
+      "doc": "Crawl attempts",
+      "type": "long"
+    },
+    {
+      "name": "error",
+      "doc": "Error message of a failed attempt",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "name",
+      "doc": "Product name",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "sku",
+      "doc": "SKU",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "attribute_set_id",
+      "doc": "Attribute set ID",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "attribute_set",
+      "doc": "Attribute set name",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "type_id",
+      "doc": "simple, product_set, virtual or deposit",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "product_type",
+      "doc": "ring, wedding_ring, pendant, ...",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "product_type_value",
+      "doc": "Product type code",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "collection",
+      "doc": "Collection name",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "collection_id",
+      "doc": "Collection ID",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "category",
+      "doc": "Category ID; usually '0'",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "category_name",
+      "doc": "Category name",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "gender",
+      "doc": "women, men, or 'false' when the site sends false",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "price",
+      "doc": "Price in currency, tax included",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "min_price",
+      "doc": "Lowest configurable price",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "max_price",
+      "doc": "Highest configurable price",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "min_price_format",
+      "doc": "Formatted lowest price",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "max_price_format",
+      "doc": "Formatted highest price",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "full_price",
+      "doc": "List price",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "sale_price",
+      "doc": "Sale price",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "full_price_format",
+      "doc": "Formatted list price",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "sale_price_format",
+      "doc": "Formatted sale price",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "currency",
+      "doc": "ISO currency code, e.g. USD",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "include_tax",
+      "doc": "Whether prices include tax",
+      "type": [
+        "null",
+        "boolean"
+      ],
+      "default": null
+    },
+    {
+      "name": "default_tax",
+      "doc": "Default tax rate",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "current_tax",
+      "doc": "Current tax rate",
+      "type": [
+        "null",
+        {
+          "type": "bytes",
+          "logicalType": "decimal",
+          "precision": 38,
+          "scale": 9
+        }
+      ],
+      "default": null
+    },
+    {
+      "name": "use_gold_price",
+      "doc": "Price follows the gold price",
+      "type": [
+        "null",
+        "boolean"
+      ],
+      "default": null
+    },
+    {
+      "name": "option_count",
+      "doc": "Number of configurable options",
+      "type": [
+        "null",
+        "long"
+      ],
+      "default": null
+    },
+    {
+      "name": "source",
+      "doc": "Storefront request that produced the row",
+      "type": {
+        "type": "record",
+        "name": "ProductSource",
+        "fields": [
+          {
+            "name": "host",
+            "doc": "Storefront host that answered",
+            "type": "string"
+          },
+          {
+            "name": "store_code",
+            "doc": "Storefront code",
+            "type": "string"
+          },
+          {
+            "name": "url",
+            "doc": "Requested react_data URL",
+            "type": "string"
+          },
+          {
+            "name": "requested_currency",
+            "doc": "Currency requested",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "run_id",
+      "doc": "Crawl run ID (enrichment_runs)",
+      "type": "string"
+    },
+    {
+      "name": "crawled_at",
+      "doc": "Crawl time (UTC)",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-micros"
+      }
+    }
+  ]
+}

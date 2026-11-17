@@ -4,8 +4,14 @@ GCS and BigQuery are replaced by small in-memory fakes; nothing here calls Googl
 """
 import base64
 import hashlib
+import io
 import json
+from contextlib import redirect_stdout
 from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -19,6 +25,7 @@ from glamira_pipeline.export.exporter import MANIFEST, content_sha256
 from glamira_pipeline.export.schema import bigquery_schema, schema_json
 from glamira_pipeline.export.tables import PRODUCTS
 from glamira_pipeline.warehouse.bigquery import LoadError, TransientLoadError, load
+from glamira_pipeline.warehouse.function import handle
 from glamira_pipeline.warehouse.publish import PublishError, file_crc32c, publish_table
 from glamira_pipeline.warehouse.runner import process_load_spec
 from glamira_pipeline.warehouse.spec import LOAD_SPEC, LOADED, LoadSpec, LoadSpecError, Source
@@ -324,6 +331,64 @@ class RunnerTests(unittest.TestCase):
         self.bucket.objects[self.name] = b"{}"
         with self.assertRaises(LoadSpecError):
             process_load_spec(self.gcs, FakeBigQuery(), "b", self.name)
+
+
+class FunctionTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def setUp(self):
+        self.bucket = FakeBucket("b")
+        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.avro"] = b"12345"
+        self.name = f"raw/events/export_id=2026-11-17/{LOAD_SPEC}"
+        self.bucket.objects[self.name] = spec().to_json().encode()
+        self.env = {"ALLOWED_DATASETS": "raw, raw_sample"}
+
+    def call(self, bq, name=None, env=None):
+        logs = io.StringIO()
+        with redirect_stdout(logs):
+            outcome = handle({"bucket": "b", "name": name or self.name}, env=self.env if env is None else env,
+                             clients=(FakeGcs(self.bucket), bq))
+        return outcome, [json.loads(line) for line in logs.getvalue().splitlines()]
+
+    def test_parts_and_other_objects_are_ignored_without_clients(self):
+        outcome = handle({"bucket": "b", "name": "raw/events/export_id=x/chunk=a/part-00000.avro"}, env={})
+        self.assertEqual(outcome.status, "ignored")
+
+    def test_load_spec_is_loaded_and_logged(self):
+        outcome, logs = self.call(FakeBigQuery())
+        self.assertEqual(outcome.status, "loaded")
+        self.assertEqual((logs[-1]["severity"], logs[-1]["rows"]), ("INFO", 10))
+
+    def test_transient_failure_is_raised_for_redelivery(self):
+        with self.assertRaises(TransientLoadError):
+            self.call(FakeBigQuery(outcomes={spec().job_id(): "timeout"}))
+
+    def test_permanent_failures_are_logged_not_retried(self):
+        outcome, logs = self.call(FakeBigQuery(rows_after_load=9))
+        self.assertIsNone(outcome)
+        self.assertEqual((logs[-1]["severity"], logs[-1]["error"]), ("ERROR", "LoadError"))
+        outcome, logs = self.call(FakeBigQuery(), env={"ALLOWED_DATASETS": "raw_sample"})
+        self.assertIn("not in the allowed datasets", logs[-1]["message"])
+        outcome, logs = self.call(FakeBigQuery(), env={})
+        self.assertIsNone(outcome)
+        self.assertIn("ALLOWED_DATASETS is not set", logs[-1]["message"])
+
+    def test_deployed_modules_do_not_import_the_export_package(self):
+        """The deploy script ships only some warehouse modules; they must import nothing else of the project."""
+        script = (self.ROOT / "scripts/deploy_bigquery_loader.sh").read_text()
+        modules = re.search(r"for module in ([\w ]+); do", script).group(1).split()
+        with TemporaryDirectory() as tmp:
+            package = Path(tmp) / "glamira_pipeline" / "warehouse"
+            package.mkdir(parents=True)
+            shutil.copy(self.ROOT / "src/glamira_pipeline/__init__.py", package.parent)
+            for module in modules:
+                shutil.copy(self.ROOT / f"src/glamira_pipeline/warehouse/{module}.py", package)
+            shutil.copy(self.ROOT / "functions/bigquery_loader/main.py", tmp)
+            check = ("import sys; sys.path.insert(0, '.'); import main; "
+                     "bad = [m for m in sys.modules if m.startswith(('glamira_pipeline.export', 'pymongo', 'fastavro'))]; "
+                     "assert main.handle.__module__ == 'glamira_pipeline.warehouse.function', main.handle; "
+                     "assert not bad, bad")
+            subprocess.run([sys.executable, "-W", "ignore", "-c", check], cwd=tmp, check=True)
 
 
 if __name__ == "__main__":

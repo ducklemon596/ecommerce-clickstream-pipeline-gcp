@@ -16,8 +16,8 @@ A unit test fails if the committed schema files differ from the declaration. The
 flowchart LR
     M[(MongoDB countly<br/>summary, ip_locations,<br/>products, product_option_values)] -->|read-only cursor| C[export-avro<br/>convert + HMAC]
     C --> F[part-NNNNN.avro<br/>schema files<br/>_manifest.json]
-    F -->|gcloud storage rsync| G[(GCS<br/>raw/&lt;table&gt;/export_id=…/)]
-    G -->|bq load AVRO| B[(BigQuery raw.*)]
+    F -->|publish-export| G[(GCS<br/>raw/&lt;table&gt;/export_id=…/)]
+    G -->|_load.json → Cloud Function<br/>AVRO load job| B[(BigQuery raw.*)]
 ```
 
 | Table | Source collection | Grain | Key | Rows (2026-11-17) | Partition / cluster |
@@ -358,28 +358,19 @@ The default never decodes, because the SHA-256 covers every byte that was checke
 
 ## 7. Loading into BigQuery
 
-Create each table from its committed schema, upload the export, then load the parts listed in the manifest. Shown for `events`; the other tables omit partitioning and clustering.
-
 ```bash
-bq mk --table \
-  --schema=schemas/raw/events.bq.json \
-  --time_partitioning_field=time_stamp --time_partitioning_type=DAY \
-  --clustering_fields=collection \
-  <project>:raw.events
-
-gcloud storage rsync --recursive --checksums-only \
-  /data/exports/2026-11-17/events gs://<bucket>/raw/events/export_id=2026-11-17/
-
-bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUMERIC \
-  <project>:raw.events "$(jq -r '[.files[].name | "gs://<bucket>/raw/events/export_id=2026-11-17/" + .] | join(",")' \
-  /data/exports/2026-11-17/events/_manifest.json)"
+uv run publish-export /data/exports/2026-11-17 --bucket <bucket> --dataset raw
 ```
 
-- `--use_avro_logical_types` is mandatory. Without it, BigQuery reads `timestamp-micros` as INTEGER, which does not match the TIMESTAMP columns.
-- Upload only after `_manifest.json` exists. Because the parts are byte-identical across reruns, `rsync --checksums-only` uploads nothing that is already there.
-- Loading the listed parts, not a wildcard, keeps manifests, markers and stray objects out of the load.
-- **Reloading the same export:** loading the same files twice with the default append duplicates rows. The planned loader uses a deterministic job ID and `WRITE_TRUNCATE_DATA` instead ([decision record](decisions/export_retry_idempotency.md), section 7); it is not built yet.
-- **Not yet verified:** one test load of a small export. It should confirm the REQUIRED/NULLABLE handling, empty arrays, the NULL STRUCT and NUMERIC in BigQuery.
+- `publish-export` verifies the export, uploads it to `gs://<bucket>/raw/<table>/export_id=<export-id>/`, and writes `_load.json` last.
+- The `bigquery-loader` Cloud Function then loads each table into `raw.<table>`. It creates the table from the contract on first use, with day partitioning on `events.time_stamp` and clustering by `collection`.
+- The load uses a deterministic job ID and `WRITE_TRUNCATE_DATA`, then checks the row count. Repeating any step changes nothing.
+- The setup, IAM and checks are in the [runbook](runbooks/bigquery_load.md); how the load works is in the [warehouse guide](../src/glamira_pipeline/warehouse/README.md).
+
+**Load options fixed by this contract:**
+- `use_avro_logical_types`: otherwise `timestamp-micros` arrives as INTEGER, not TIMESTAMP.
+- `decimal_target_types=NUMERIC`, for the `decimal(38, 9)` columns.
+- Source format AVRO, with the table schema taken from `schemas/raw/<table>.bq.json`, not from the files.
 
 ## 8. Changing the contract
 
@@ -398,4 +389,4 @@ bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUM
 - **Converter changes need a new export ID.** The export identity covers the schema hash, not the converter code.
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.
-- **Not yet loaded.** The full export completed with 0 contract violations but has not been loaded into BigQuery. Only the 100K sample output was scanned for raw PII; the full output was not.
+- **Free-text PII.** The pseudonymized columns are covered by the contract, but `current_url`, `referrer_url` and `key_search` are exported as sent and may contain what a visitor typed.

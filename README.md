@@ -88,6 +88,7 @@ Each step started with measurement on a sample, chose the simplest option that t
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
 - [Raw events schema decision record](docs/decisions/raw_events_schema.md)
+- [Retry-safe export proposal](docs/decisions/export_retry_idempotency.md) (proposed, not implemented)
 - [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
 
 ## How data correctness is ensured

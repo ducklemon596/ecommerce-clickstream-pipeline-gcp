@@ -1,0 +1,64 @@
+{
+  "type": "record",
+  "name": "IpLocation",
+  "namespace": "glamira.raw",
+  "doc": "Offline IP2Location lookup of every distinct valid event IP.",
+  "fields": [
+    {
+      "name": "ip_hash",
+      "doc": "HMAC-SHA256 of the normalized IP; joins events.ip_hash",
+      "type": "string"
+    },
+    {
+      "name": "ip_version",
+      "doc": "4 or 6",
+      "type": "long"
+    },
+    {
+      "name": "status",
+      "doc": "resolved, no_match, not_public, unsupported_ipv6 or lookup_failed",
+      "type": "string"
+    },
+    {
+      "name": "country_code",
+      "doc": "ISO 3166-1 alpha-2; null unless resolved",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "country_name",
+      "doc": "Country name; null unless resolved",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "region",
+      "doc": "Region; null when unknown",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "city",
+      "doc": "City; null when unknown",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null
+    },
+    {
+      "name": "database_id",
+      "doc": "SHA-256 of the IP2Location BIN used",
+      "type": "string"
+    }
+  ]
+}

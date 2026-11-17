@@ -1,13 +1,14 @@
 [project]
 name = "glamira-pipeline"
 version = "0.1.0"
-description = "Profiling, MongoDB loading and enrichment of 41M Glamira tracking events"
+description = "Profiling, MongoDB loading, enrichment and Avro export of 41M Glamira tracking events"
 readme = "README.md"
 authors = [
     { name = "ducklemon596", email = "thienquang050906@gmai.com" }
 ]
 requires-python = ">=3.10"
 dependencies = [
+    "fastavro>=1.12.2",
     "ip2location>=8.11.0",
     "pymongo>=4.18.3",
 ]
@@ -23,6 +24,8 @@ setup-product-collections = "glamira_pipeline.products.cli:setup_collections_mai
 load-summary = "glamira_pipeline.load.cli:load_main"
 reconcile-summary = "glamira_pipeline.load.cli:reconcile_main"
 profile-schema = "glamira_pipeline.profiling.cli:main"
+export-avro = "glamira_pipeline.export.cli:export_main"
+write-raw-schemas = "glamira_pipeline.export.cli:schemas_main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

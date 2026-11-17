@@ -1,0 +1,358 @@
+[
+  {
+    "name": "_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Event ID: source ObjectId as 24 hex chars"
+  },
+  {
+    "name": "collection",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Event type, e.g. view_product_detail"
+  },
+  {
+    "name": "time_stamp",
+    "mode": "REQUIRED",
+    "type": "TIMESTAMP",
+    "description": "Event time (UTC) from Unix seconds"
+  },
+  {
+    "name": "api_version",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Tracker API version"
+  },
+  {
+    "name": "store_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Glamira store ID (digits)"
+  },
+  {
+    "name": "current_url",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Page URL"
+  },
+  {
+    "name": "referrer_url",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Referrer URL; '' for direct entries"
+  },
+  {
+    "name": "ip_hash",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "HMAC-SHA256 of the normalized client IP; joins ip_locations.ip_hash"
+  },
+  {
+    "name": "device_id_hash",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "HMAC-SHA256 of the device ID"
+  },
+  {
+    "name": "user_id_hash",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "HMAC-SHA256 of the customer ID; '' for anonymous visits (95.19%)"
+  },
+  {
+    "name": "user_agent",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "Browser user agent"
+  },
+  {
+    "name": "local_time",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Client local time as sent, e.g. '2020-05-20 3:6:40'"
+  },
+  {
+    "name": "resolution",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Screen resolution as sent"
+  },
+  {
+    "name": "email_hash",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "HMAC-SHA256 of the trimmed, lower-cased email; '' when not given"
+  },
+  {
+    "name": "show_recommendation",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "'true'/'false' as sent; a few malformed values"
+  },
+  {
+    "name": "product_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Product of a product event"
+  },
+  {
+    "name": "viewing_product_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Product page on which a recommendation was shown"
+  },
+  {
+    "name": "recommendation_product_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Recommended product"
+  },
+  {
+    "name": "recommendation_clicked_position",
+    "mode": "NULLABLE",
+    "type": "INTEGER",
+    "description": "Clicked slot (always 0 observed)"
+  },
+  {
+    "name": "recommendation_product_position",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Slot of the recommended product; int or string in the source"
+  },
+  {
+    "name": "recommendation",
+    "mode": "NULLABLE",
+    "type": "BOOLEAN",
+    "description": "Recommendation flag (only false observed)"
+  },
+  {
+    "name": "utm_source",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Campaign source; source false becomes 'false'"
+  },
+  {
+    "name": "utm_medium",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Campaign medium; source false becomes 'false'"
+  },
+  {
+    "name": "cat_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Category ID of a listing page"
+  },
+  {
+    "name": "collect_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Collection ID of a listing page"
+  },
+  {
+    "name": "key_search",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Search text (search_box_action)"
+  },
+  {
+    "name": "price",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Locale-formatted price (add_to_cart_action)"
+  },
+  {
+    "name": "currency",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Currency symbol (add_to_cart_action)"
+  },
+  {
+    "name": "is_paypal",
+    "mode": "NULLABLE",
+    "type": "BOOLEAN",
+    "description": "PayPal express checkout (only true observed)"
+  },
+  {
+    "name": "order_id",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Order number (checkout_success); '' in checkout"
+  },
+  {
+    "name": "option",
+    "mode": "REPEATED",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "option_label",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Option name, e.g. alloy, diamond, stone/diamonds"
+      },
+      {
+        "name": "option_id",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Product option ID; joins product_option_values.option_id"
+      },
+      {
+        "name": "value_label",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Selected value label"
+      },
+      {
+        "name": "value_id",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Selected value ID; joins product_option_values.value_id"
+      },
+      {
+        "name": "quality",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Stone quality code (select_product_option_quality only)"
+      },
+      {
+        "name": "quality_label",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Stone quality label (select_product_option_quality only)"
+      }
+    ],
+    "description": "Chosen product options: the array form of the source 'option'"
+  },
+  {
+    "name": "option_filter",
+    "mode": "NULLABLE",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "alloy",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Metal filter"
+      },
+      {
+        "name": "diamond",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Stone filter"
+      },
+      {
+        "name": "shapediamond",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Stone shape filter"
+      },
+      {
+        "name": "stone",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Stone filter (view_all_recommend)"
+      },
+      {
+        "name": "price",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Price filter (view_all_recommend)"
+      },
+      {
+        "name": "finish",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Finish filter (view_all_recommend)"
+      },
+      {
+        "name": "pearlcolor",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Pearl colour filter (view_all_recommend)"
+      },
+      {
+        "name": "kollektion",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Collection filter; source key 'Kollektion'"
+      },
+      {
+        "name": "kollektion_id",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Collection ID filter (view_all_recommend)"
+      },
+      {
+        "name": "category_id",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Category filter; source key 'category id'"
+      }
+    ],
+    "description": "Listing filter state: the object form of the source 'option'"
+  },
+  {
+    "name": "cart_products",
+    "mode": "REPEATED",
+    "type": "RECORD",
+    "fields": [
+      {
+        "name": "product_id",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Product ID; int in the source"
+      },
+      {
+        "name": "amount",
+        "mode": "NULLABLE",
+        "type": "INTEGER",
+        "description": "Quantity (checkout, checkout_success); -1 to 9,999 observed"
+      },
+      {
+        "name": "price",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Locale-formatted unit price (checkout_success), e.g. '55,00'"
+      },
+      {
+        "name": "currency",
+        "mode": "NULLABLE",
+        "type": "STRING",
+        "description": "Currency symbol (checkout_success), e.g. '€'"
+      },
+      {
+        "name": "option",
+        "mode": "REPEATED",
+        "type": "RECORD",
+        "fields": [
+          {
+            "name": "option_id",
+            "mode": "NULLABLE",
+            "type": "STRING",
+            "description": "Option ID; int in the source"
+          },
+          {
+            "name": "option_label",
+            "mode": "NULLABLE",
+            "type": "STRING",
+            "description": "Option name"
+          },
+          {
+            "name": "value_id",
+            "mode": "NULLABLE",
+            "type": "STRING",
+            "description": "Value ID; int in the source"
+          },
+          {
+            "name": "value_label",
+            "mode": "NULLABLE",
+            "type": "STRING",
+            "description": "Selected value label"
+          }
+        ],
+        "description": "Chosen options; the source string '' becomes an empty array"
+      }
+    ],
+    "description": "Cart lines (cart and checkout events)"
+  }
+]

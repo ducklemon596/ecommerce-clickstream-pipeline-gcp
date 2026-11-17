@@ -5,9 +5,10 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - profiles the data;
 - loads and validates it in MongoDB;
 - enriches it with IP geolocation and product attributes;
+- exports it to Avro files that match the BigQuery raw-layer schema;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. Export to GCS and loading into BigQuery are the next stage: the Avro format and the raw-table schema are decided ([decision record](docs/decisions/raw_events_schema.md)), the export itself is not built yet. dbt and dashboards come after that.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built and validated on a sample. The next stage is a full export, upload to GCS and loading into BigQuery; dbt and dashboards come after that.
 
 ## Results at a glance
 
@@ -21,8 +22,9 @@ It answers to three business questions: geographic performance, product and cate
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
+| Avro export (100K sample) | 0 contract violations; 100,000 rows in 22.4 MB, re-read with matching checksums; no raw IP, email, device ID or customer ID in the files. The full export is not run yet |
 
-Measurements are from 2026-11-01 to 2026-11-14 on the project VM. The reports linked below hold the full numbers.
+Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample export ran on a local MongoDB. The reports linked below hold the full numbers.
 
 ## Architecture
 
@@ -39,6 +41,7 @@ flowchart LR
     C --> P[(products<br/>product_option_values)]
     I --> RUN[(enrichment_runs)]
     C --> RUN
+    M & IL & P -->|export-avro: contract + HMAC| X[Avro parts<br/>+ manifest] -.->|next: GCS, bq load| BQ[(BigQuery raw.*)]
 ```
 
 - **Hosting:** MongoDB runs on a Compute Engine VM with its data on a dedicated XFS persistent disk.
@@ -59,6 +62,7 @@ flowchart LR
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
 | 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
+| 5 | Export the raw layer | `uv run export-avro --table all --output-dir …` | Full, read only (`--limit N` for a labelled sample) | Avro parts, schemas and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -77,8 +81,9 @@ Each step started with measurement on a sample, chose the simplest option that t
 | Crawl rate | 0.74 → 7.88 req/s ramp | Challenged at 7.4 req/s after earlier test load. No block at 3.8 req/s for 80 min | **About 4 req/s** with jitter; hard cap of 8 req/s |
 | Crawl checkpoint | Sorted-ID cursor, SQLite, the data itself | Concurrent workers finish out of order; a second store would drift from the data | **The written documents are the checkpoint**: crawl `input − finished` |
 | Storage target | Files during the crawl; MongoDB | MongoDB already hosts the source and provides upsert plus schema validation | **MongoDB now**; GCS/BigQuery export as a separate snapshot step |
-| Export format for GCS → BigQuery | JSONL; Avro | JSONL defers type errors to the BigQuery load and lets BigQuery coerce values implicitly. Avro checks every row against the schema when the file is written, and BigQuery reads compressed Avro in parallel | **Avro**, with one schema shared by Avro and the BigQuery raw table; [decision record](docs/decisions/raw_events_schema.md) (proposed) |
-| Personal data in BigQuery | Export as is; hash | Email and device ID are not needed in clear text for any business question | **HMAC-SHA256** of `email_address` and `device_id` with a secret key; `ip` kept for the geolocation join |
+| `option` filter object | STRUCT; `ARRAY<STRUCT<key, value>>` | 10 keys in two fixed sets, one per event type | **STRUCT**: plain columns, and an unknown key fails the export |
+| Export format for GCS → BigQuery | JSONL; Avro | JSONL defers type errors to the BigQuery load and lets BigQuery coerce values implicitly. Avro checks every row against the schema when the file is written, and BigQuery reads compressed Avro in parallel | **Avro**, with one schema shared by Avro and the BigQuery raw table; [decision record](docs/decisions/raw_events_schema.md), [contract](docs/raw_layer_contract.md) |
+| Personal data in BigQuery | Export as is; hash | Email, device ID, customer ID and IP are not needed in clear text for any business question; geolocation only needs a join key | **HMAC-SHA256** with a secret key of `email_address`, `device_id`, `user_id_db` and `ip`; `ip_locations` is keyed by the same IP hash, so the join still works |
 
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
@@ -100,6 +105,7 @@ Details and caveats:
 - **Reconciliation, not exit codes.**
   - Counts are checked after every full run: 19,557 product documents = 19,557 input IDs; option rows reconcile with `option_count`; IP frequencies reconcile with the 41,432,473 scanned events.
   - IP output is verified in a staging collection before publication.
+- **A typed raw contract.** The export refuses unknown keys, unplanned types and missing REQUIRED values, counts every conversion, and verifies each Avro part after writing. One declaration generates the Avro schema, the BigQuery schema and the converter.
 - **Provenance.** Each run is recorded in `enrichment_runs`:
   - its parameters;
   - an input SHA-256 (or the BIN SHA-256);
@@ -160,6 +166,9 @@ uv run list-product-ids --output-dir data/product_ids/full     # ~6 min, read on
 uv run setup-product-collections
 uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
   --delay 0.2 --jitter 0.1 --concurrency 6 --block-retries 3   # ~80 min; rerun to resume
+
+export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
+uv run export-avro --table all --output-dir /data/glamira/exports/$(date +%Y%m%d)   # read only; new directory
 ```
 
 | Concern | How it is handled |
@@ -182,8 +191,11 @@ src/glamira_pipeline/
 ├── quality/        # data-quality checks and report rendering
 ├── ip_location/    # Counter scan, offline lookup, verified publication
 ├── products/       # distinct IDs, react_data crawl, MongoDB store
+├── export/         # raw-layer contract, PII hashing, Avro export
 └── provenance.py   # file and collection identities for run records
+schemas/raw/        # generated Avro (.avsc) and BigQuery (.bq.json) schemas
 docs/
+├── raw_layer_contract.md
 ├── reports/        # measured results (data quality, scope, product IDs, full load)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
@@ -204,6 +216,6 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Implement the Avro export with the proposed raw schema, validate it on all 41.4M events, and load it into BigQuery after a small test load.
-  - Decide the `gender` representation of `products` in BigQuery.
+  - Run the Avro export on the full data (all four tables) and record its measurements.
+  - Upload to GCS, do a small BigQuery test load, then load the raw dataset.
   - Use least-privilege MongoDB users for profiling and crawling.

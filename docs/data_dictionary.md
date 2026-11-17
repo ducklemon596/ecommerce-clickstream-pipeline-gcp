@@ -5,6 +5,7 @@ This dictionary covers every MongoDB collection the project reads or creates in 
 **Evidence.**
 - Event fields, types and nullability come from a **full scan** of `countly.summary`: all 41,432,473 documents, observed 2026-11-14, commit `a8e95c1`. Per-event-type tables are in the [schema profile](reports/schema_profile.md).
 - Enrichment schemas come from the validators and writers in the code, plus the run verification recorded in the [IP location guide](../src/glamira_pipeline/ip_location/README.md) and the [product crawl guide](../src/glamira_pipeline/products/README.md).
+- How each collection is typed in Avro and BigQuery (hashing, type unification, REQUIRED columns) is in the [raw layer contract](raw_layer_contract.md); this page describes the MongoDB source.
 - Meanings are inferred from field names, values and website behaviour. The event producer's own documentation was not available. Inferred meanings are marked *(inferred)*.
 
 **Conventions.**

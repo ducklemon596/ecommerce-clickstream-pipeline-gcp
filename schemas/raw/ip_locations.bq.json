@@ -1,0 +1,50 @@
+[
+  {
+    "name": "ip_hash",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "HMAC-SHA256 of the normalized IP; joins events.ip_hash"
+  },
+  {
+    "name": "ip_version",
+    "mode": "REQUIRED",
+    "type": "INTEGER",
+    "description": "4 or 6"
+  },
+  {
+    "name": "status",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "resolved, no_match, not_public, unsupported_ipv6 or lookup_failed"
+  },
+  {
+    "name": "country_code",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "ISO 3166-1 alpha-2; null unless resolved"
+  },
+  {
+    "name": "country_name",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Country name; null unless resolved"
+  },
+  {
+    "name": "region",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "Region; null when unknown"
+  },
+  {
+    "name": "city",
+    "mode": "NULLABLE",
+    "type": "STRING",
+    "description": "City; null when unknown"
+  },
+  {
+    "name": "database_id",
+    "mode": "REQUIRED",
+    "type": "STRING",
+    "description": "SHA-256 of the IP2Location BIN used"
+  }
+]

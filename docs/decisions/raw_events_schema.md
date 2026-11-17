@@ -1,6 +1,6 @@
 # Decision record: schema of the raw events table (Avro → BigQuery)
 
-**Status:** proposed, 2026-11-16; personal-data handling decided by the owner the same day. **Scope:** the file format and schema used to export `countly.summary` to GCS and to load it into the BigQuery raw layer.
+**Status:** accepted 2026-11-17 (proposed 2026-11-16; email and device ID hashing decided 2026-11-16, IP and customer ID hashing 2026-11-17). The schema in force is the [raw layer contract](../raw_layer_contract.md), generated from code; this record keeps the reasoning. **Scope:** the file format and schema used to export `countly.summary` to GCS and to load it into the BigQuery raw layer.
 
 ## Context
 
@@ -155,7 +155,7 @@ WHERE e.collection = 'checkout_success'
 
 `time_stamp` is a plain int of Unix seconds (`1591266092` for the first example). It is written as an Avro `long` with the logical type `timestamp-micros` (`1591266092000000`) so that BigQuery creates a TIMESTAMP column, which partitioning needs.
 
-## Proposed schema: `raw.events`
+## Schema: `raw.events`
 
 **Table settings**
 - Partitioned by `DATE(time_stamp)`. The data spans 2020-04-01 to 2020-06-04: 65 daily partitions.
@@ -171,7 +171,9 @@ WHERE e.collection = 'checkout_success'
 | `api_version` | STRING | REQUIRED | as is (always `"1.0"`) |
 | `store_id` | STRING | REQUIRED | as is (always digits) |
 | `current_url`, `referrer_url` | STRING | REQUIRED | as is; `referrer_url` is `""` for direct entries |
-| `ip`, `user_id_db`, `user_agent` | STRING | REQUIRED | as is. **Sensitive**; `ip` is needed to join `ip_locations` |
+| `ip_hash` | STRING | REQUIRED | HMAC-SHA256 of the canonical IP. `ip_locations` is exported keyed by the same hash, so the geolocation join still works. The raw value is not exported |
+| `user_id_hash` | STRING | REQUIRED | HMAC-SHA256 of `user_id_db` as stored; `""` kept for anonymous visits (95.19%). The raw value is not exported |
+| `user_agent` | STRING | REQUIRED | as is. **Sensitive** |
 | `device_id_hash` | STRING | REQUIRED | HMAC-SHA256 of `device_id`, 64 hex chars. The raw value is not exported |
 | `email_hash` | STRING | NULLABLE | HMAC-SHA256 of the trimmed, lower-cased `email_address`; `""` and null kept as they are (95.20% empty, 397 nulls). The raw value is not exported |
 | `local_time` | STRING | NULLABLE | as is. 12.6 M values do not match `YYYY-MM-DD HH:MM:SS`; the most frequent ones are not zero-padded (`2020-05-20 3:6:40`). Parse in staging |
@@ -211,103 +213,9 @@ All nested fields are NULLABLE STRING unless stated otherwise.
   - The source sometimes stores `""` instead of an array: 148,509 lines, and `""` is the only string ever seen there.
   - `""` becomes `[]`.
 
-## Full type mapping: source → Avro → BigQuery
+## Full type mapping
 
-Every column of `raw.events`. *Source types* are BSON types counted over all 41,432,473 documents ([schema profile](../reports/schema_profile.md)). Avro types are shown in short form; `OptionItem`, `OptionFilter`, `CartProduct` and `CartOption` are the named Avro records defined at their first use.
-
-Avro notation used below:
-- `["null", T]` with `"default": null` → NULLABLE.
-- `{"type": "array", "items": T}` with `"default": []` → REPEATED.
-- `ts-micros` = `{"type": "long", "logicalType": "timestamp-micros"}`.
-
-### Top level (`Event`)
-
-| Column | Source field | Source types (full data) | Avro type | BigQuery type | Mode |
-| --- | --- | --- | --- | --- | --- |
-| `_id` | `_id` | objectId 41.43 M | `string` | STRING | REQUIRED |
-| `collection` | `collection` | string 41.43 M | `string` | STRING | REQUIRED |
-| `time_stamp` | `time_stamp` | int 41.43 M | `ts-micros` | TIMESTAMP | REQUIRED |
-| `api_version` | `api_version` | string 41.43 M | `string` | STRING | REQUIRED |
-| `store_id` | `store_id` | string 41.43 M | `string` | STRING | REQUIRED |
-| `current_url` | `current_url` | string 41.43 M | `string` | STRING | REQUIRED |
-| `referrer_url` | `referrer_url` | string 41.43 M | `string` | STRING | REQUIRED |
-| `ip` | `ip` | string 41.43 M | `string` | STRING | REQUIRED |
-| `device_id_hash` | `device_id` | string 41.43 M | `string` | STRING | REQUIRED |
-| `user_id_db` | `user_id_db` | string 41.43 M | `string` | STRING | REQUIRED |
-| `user_agent` | `user_agent` | string 41.43 M | `string` | STRING | REQUIRED |
-| `local_time` | `local_time` | string 41.43 M, null 240 | `["null","string"]` | STRING | NULLABLE |
-| `resolution` | `resolution` | string 41.43 M, null 240 | `["null","string"]` | STRING | NULLABLE |
-| `email_hash` | `email_address` | string 41.43 M, null 397 | `["null","string"]` | STRING | NULLABLE |
-| `show_recommendation` | `show_recommendation` | string 33.67 M, null 7.77 M | `["null","string"]` | STRING | NULLABLE |
-| `product_id` | `product_id` | string 22.24 M | `["null","string"]` | STRING | NULLABLE |
-| `viewing_product_id` | `viewing_product_id` | string 1.99 M | `["null","string"]` | STRING | NULLABLE |
-| `recommendation_product_id` | `recommendation_product_id` | string 217,700, null 25,596 | `["null","string"]` | STRING | NULLABLE |
-| `recommendation_clicked_position` | `recommendation_clicked_position` | int 179,226, null 25,547 | `["null","long"]` | INT64 | NULLABLE |
-| `recommendation_product_position` | `recommendation_product_position` | **int 20,128, string 18,344**, null 51 | `["null","string"]` | STRING | NULLABLE |
-| `recommendation` | `recommendation` | bool 10.94 M, null 68 | `["null","boolean"]` | BOOL | NULLABLE |
-| `utm_source` | `utm_source` | **bool 10.86 M, string 88,179**, null 68 | `["null","string"]` | STRING | NULLABLE |
-| `utm_medium` | `utm_medium` | **bool 10.85 M, string 90,721**, null 68 | `["null","string"]` | STRING | NULLABLE |
-| `cat_id` | `cat_id` | null 12.04 M, string 258 | `["null","string"]` | STRING | NULLABLE |
-| `collect_id` | `collect_id` | string 12.04 M | `["null","string"]` | STRING | NULLABLE |
-| `key_search` | `key_search` | null 163,108, string 75,200 | `["null","string"]` | STRING | NULLABLE |
-| `price` | `price` | string 186,590, null 1,311 | `["null","string"]` | STRING | NULLABLE |
-| `currency` | `currency` | string 186,590, null 1,311 | `["null","string"]` | STRING | NULLABLE |
-| `is_paypal` | `is_paypal` | null 186,592, bool 1,309 | `["null","boolean"]` | BOOL | NULLABLE |
-| `order_id` | `order_id` | **string 88,540, int 16,116, double 9,963** | `["null","string"]` | STRING | NULLABLE |
-| `option` | `option` when array | **array 22.21 M** (object 12.09 M) | `array<OptionItem>` | RECORD | REPEATED |
-| `option_filter` | `option` when object | **object 12.09 M** (array 22.21 M) | `["null", OptionFilter]` | RECORD | NULLABLE |
-| `cart_products` | `cart_products` | array 457,696 | `array<CartProduct>` | RECORD | REPEATED |
-
-Bold source types are the mixed ones; the rules that resolve them are in the column table above.
-
-### `OptionItem` (elements of `option`)
-
-| Field | Source types | Avro type | BigQuery type | Mode |
-| --- | --- | --- | --- | --- |
-| `option_label` | string 33.46 M | `["null","string"]` | STRING | NULLABLE |
-| `option_id` | string 33.28 M | `["null","string"]` | STRING | NULLABLE |
-| `value_label` | string 33.46 M | `["null","string"]` | STRING | NULLABLE |
-| `value_id` | string 33.39 M | `["null","string"]` | STRING | NULLABLE |
-| `quality` | string 2.23 M | `["null","string"]` | STRING | NULLABLE |
-| `quality_label` | string 1.93 M | `["null","string"]` | STRING | NULLABLE |
-
-33,573,308 elements in total; each field is missing in some, hence NULLABLE.
-
-### `OptionFilter` (`option_filter`)
-
-| Field | Source key | Source types | Avro type | BigQuery type | Mode |
-| --- | --- | --- | --- | --- | --- |
-| `alloy` | `alloy` | string 12.09 M | `["null","string"]` | STRING | NULLABLE |
-| `diamond` | `diamond` | string 12.06 M | `["null","string"]` | STRING | NULLABLE |
-| `shapediamond` | `shapediamond` | string 12.06 M | `["null","string"]` | STRING | NULLABLE |
-| `stone` | `stone` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-| `price` | `price` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-| `finish` | `finish` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-| `pearlcolor` | `pearlcolor` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-| `kollektion` | `Kollektion` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-| `kollektion_id` | `kollektion_id` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-| `category_id` | `category id` | string 33,664 | `["null","string"]` | STRING | NULLABLE |
-
-### `CartProduct` (elements of `cart_products`)
-
-| Field | Source types | Avro type | BigQuery type | Mode |
-| --- | --- | --- | --- | --- |
-| `product_id` | int 822,438 | `["null","string"]` | STRING | NULLABLE |
-| `amount` | int 160,181 | `["null","long"]` | INT64 | NULLABLE |
-| `price` | string 35,065 | `["null","string"]` | STRING | NULLABLE |
-| `currency` | string 35,065 | `["null","string"]` | STRING | NULLABLE |
-| `option` | **array 673,929, string `""` 148,509** | `array<CartOption>` | RECORD | REPEATED |
-
-### `CartOption` (elements of `cart_products[].option`)
-
-| Field | Source types | Avro type | BigQuery type | Mode |
-| --- | --- | --- | --- | --- |
-| `option_id` | int 1.13 M | `["null","string"]` | STRING | NULLABLE |
-| `option_label` | string 1.13 M | `["null","string"]` | STRING | NULLABLE |
-| `value_id` | int 1.13 M | `["null","string"]` | STRING | NULLABLE |
-| `value_label` | string 1.13 M | `["null","string"]` | STRING | NULLABLE |
-
-**Totals:** 33 top-level columns (11 REQUIRED, 19 NULLABLE scalars, 3 complex) and 25 nested fields in 4 record types. Both the Avro schema and the BigQuery JSON schema are generated from one field list (see Verification). This table was checked against that list; the exporter will commit it to the repository.
+The complete source → Avro → BigQuery mapping of every column, nested field and related table is generated from the code and kept in the [raw layer contract](../raw_layer_contract.md#5-tables). It is not repeated here, so there is one place to maintain.
 
 ## What the raw layer cannot tell apart
 
@@ -332,22 +240,19 @@ Each conversion is counted by the exporter and recorded with the export run, so 
 
 ## Verification so far
 
-- **Generated from one definition.** The Avro schema and the BigQuery JSON schema both come from a single field list, so they cannot drift.
-- **Sample check:** the 100K sequential sample (non-random) converted with **0 violations** and was written with `fastavro` (`validator=True`, `strict=True`, deflate).
-  - It read back as 100,000 rows, 18.7 MB with the hashes (hex hashes compress worse than the raw values), which extrapolates to about 8 GB for the full data.
-  - After hashing: 100,000 / 100,000 device hashes and 7,557 email hashes are 64 hex characters, 92,443 emails stay `""`, and no raw email or device ID appears in the file.
-  - Conversions applied: 27,350 / 27,340 bool → string in `utm_*`, 26,066 objects → `option_filter`, 101 `order_id` int/double → string, 1,740 cart product IDs, 43 `""` → `[]`.
+- **Generated from one definition.** The Avro schema, the BigQuery JSON schema and the converter all come from `src/glamira_pipeline/export/tables.py`; a unit test fails if the committed schema files drift.
+- **Sample export (2026-11-17):** the 100K sequential sample (non-random), loaded into a local MongoDB, exported with `export-avro` with **0 violations**.
+  - 100,000 rows in 3 parts, 22.4 MB, re-read with matching checksums and row counts. No raw IP, email, device ID or customer ID appears in the files.
+  - Conversions: 27,350 / 27,340 bool → string in `utm_*`, 26,066 objects → `option_filter`, 101 `order_id` int/double → string, 1,740 cart product IDs, 43 `""` → `[]`.
+- **Enrichment tables:** types and modes come from read-only full scans of `ip_locations`, `products` and `product_option_values` on 2026-11-17.
 
 **Still to verify**
-- **Full-data conversion:** run the converter on all 41.4 M documents. This happens at the export step; every planned rule is backed by the full profile, but only a full pass proves there is no unplanned case.
-- **One test load into BigQuery:** a small Avro file with `use_avro_logical_types=true` into a table created from the BigQuery JSON schema, to confirm:
-  - TIMESTAMP and REQUIRED behaviour;
-  - the empty-array and null-STRUCT representation;
-  - partitioning.
+- **Full-data export** of all four tables. Every rule is backed by full-data profiles, but only a full pass proves there is no unplanned case.
+- **One test load into BigQuery** of a small export, to confirm TIMESTAMP, REQUIRED, empty arrays, the null STRUCT, NUMERIC and partitioning.
 
 ## Personal data
 
-**Decision (owner, 2026-11-16):** `email_address` and `device_id` are pseudonymized at export. Only the hashes leave MongoDB.
+**Decision (owner):** `email_address` and `device_id` (2026-11-16), `ip` and `user_id_db` (2026-11-17) are pseudonymized at export. Only the hashes leave MongoDB.
 
 | Choice | Reason |
 | --- | --- |
@@ -355,11 +260,12 @@ Each conversion is counted by the exporter and recorded with the export run, so 
 | **One key for every export run** | The same person gets the same hash across files and reruns, so distinct-customer and repeat-visit analysis still work |
 | **Key from the environment** (`GLAMIRA_PII_HASH_KEY`, 32 random bytes as hex) | Never committed or stored with the data. It must be kept, because losing it means new exports no longer match old hashes |
 | **Email trimmed and lower-cased before hashing** | `A@x.com` and `a@x.com` are the same customer |
-| **`device_id` hashed exactly as stored** | It is an opaque identifier, so there is nothing to normalize |
+| **`device_id` and `user_id_db` hashed exactly as stored** | They are opaque identifiers, so there is nothing to normalize. Logged-in customers stay countable and joinable across events through `user_id_hash` |
+| **IP hashed in canonical form, in `events` and in `ip_locations`** | `ipaddress` normalization (the one `ip_locations` is keyed on) makes `2001:DB8:0::1` and `2001:db8::1` one value, so `events.ip_hash = ip_locations.ip_hash` is the geolocation join. Country, region and city stay usable; the address does not leave MongoDB |
 | **`""` and null not hashed** | A hash of the empty string would look like a real identifier; emptiness stays visible |
 
 **Still exported as is:**
-- *Sensitive columns:* `ip` (needed for the geolocation join), `user_id_db`, `user_agent`, and free text in `key_search`.
+- *Sensitive columns:* `user_agent` and free text in `key_search`. `user_agent` is kept because hashing it would remove its only analytical use (browser, OS and device type, parsed in staging), while `device_id_hash` already identifies the device.
 - *How to protect them:* keep the raw dataset restricted. Column-level policy tags can be added later without reloading.
 
 ## Open questions for the owner

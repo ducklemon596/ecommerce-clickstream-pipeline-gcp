@@ -301,7 +301,6 @@ uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
 | `--database` | `countly` | Source database |
 | `--limit N` | all | First N documents by `_id`, as one chunk. The manifest labels this a non-random sample |
 | `--rows-per-file` | 1,000,000 | Rows per Avro part |
-| `--no-verify` | verify on | Skip re-reading the parts after writing |
 
 **Output per table**
 
@@ -321,7 +320,23 @@ uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
 2. Each part is written as `.tmp` and renamed after `fsync`. A chunk is committed only by its marker, written after all its parts. An interrupted run (SIGINT, SIGTERM, SIGHUP; exit code 130) leaves the open chunk uncommitted, and the next run deletes and redoes it.
 3. Before exporting, the per-chunk counts must add up to the collection count. Each chunk must write exactly as many rows as its range held before and after the read.
 4. The output is deterministic: rows sorted by `_id` and a sync marker derived from the part name give the same bytes for the same inputs.
-5. After writing, every part is re-read: SHA-256 and row count must match the manifest.
+5. Each part's SHA-256 is computed while it is written and recorded in the chunk marker and the manifest. The export does not re-read its own output; `verify-export` checks it later (below).
+
+**Verifying an export later**, for example after it was moved or before it is uploaded:
+
+```bash
+uv run verify-export /data/exports/2026-11-17          # every table; or one table directory
+uv run verify-export /data/exports/2026-11-17/events --full
+```
+
+| Check | Default | `--full` |
+| --- | --- | --- |
+| Inventory both ways: every listed part exists; no extra part, `.tmp` file or unknown `chunk=` directory | yes | yes |
+| Size and SHA-256 of every part, and `content_sha256` | yes | yes |
+| `avro_schema_sha256` equals the committed `schemas/raw/<table>.avsc` and the schema copy in the export | yes | yes |
+| Decode every record; writer schema and row count per part | no | yes |
+
+The default never decodes rows: the SHA-256 covers every byte that was counted and checked when the part was written. On the 100K sample it takes 0.1 s against 1.6 s with `--full`. Use `--full` to test the Avro library itself, for example after upgrading fastavro. Exit code 1 means the directory differs from its manifest or from the contract.
 
 **Retries:** `AutoReconnect` (including network and server-selection timeouts) and `CursorNotFound` retry the open chunk up to 3 times, with exponential backoff and jitter. Any other error stops the run; rerun the same command after fixing the cause.
 

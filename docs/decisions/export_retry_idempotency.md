@@ -183,6 +183,7 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 | [`export/avro_files.py`](../../src/glamira_pipeline/export/avro_files.py) | Sync marker derived from `<table>/<chunk>/<part>` |
 | [`export/exporter.py`](../../src/glamira_pipeline/export/exporter.py) | Chunk loop, retries on `AutoReconnect` and `CursorNotFound`, manifest with `content_sha256` |
 | [`export/cli.py`](../../src/glamira_pipeline/export/cli.py) | `--export-id`; rerunning the same command resumes |
+| [`export/verify.py`](../../src/glamira_pipeline/export/verify.py) | `verify-export`: inventory both ways, SHA-256, schema against the repository; `--full` decodes. Separate from the export, which no longer re-reads its output (that took about 20 min of the first full run) |
 | `load/bigquery.py` | **Not built yet** (needs `google-cloud-bigquery` and a dataset): deterministic job ID, `WRITE_TRUNCATE_DATA`, `409` handling, count check |
 
 **Tests**

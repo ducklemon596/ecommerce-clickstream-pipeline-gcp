@@ -1,4 +1,5 @@
-"""CLIs: ``export-avro`` (MongoDB → Avro parts) and ``write-raw-schemas`` (committed schema files)."""
+"""CLIs: ``export-avro`` (MongoDB → Avro parts), ``verify-export`` (check a finished export) and
+``write-raw-schemas`` (committed schema files)."""
 from __future__ import annotations
 
 import argparse
@@ -13,10 +14,11 @@ from pymongo.errors import PyMongoError
 
 from glamira_pipeline.config import PROJECT_ROOT
 from glamira_pipeline.export.exporter import ExportError, ExportInterrupted, ExportOptions, export_table, \
-    verify_export, write_schema_files
+    write_schema_files
 from glamira_pipeline.export.pii import hasher_from_env
 from glamira_pipeline.export.state import StateError
 from glamira_pipeline.export.tables import TABLES
+from glamira_pipeline.export.verify import VerificationError, table_directories, verify_table
 from glamira_pipeline.mongo import client_from_env
 
 EXIT_FAILED, EXIT_INTERRUPTED = 1, 130
@@ -56,8 +58,6 @@ def export_main() -> None:
     parser.add_argument("--database", default="countly")
     parser.add_argument("--limit", type=int, help="export only the first N documents by _id (non-random sample)")
     parser.add_argument("--rows-per-file", type=int, default=1_000_000)
-    parser.add_argument("--no-verify", dest="verify", action="store_false",
-                        help="skip re-reading the parts after writing")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1 or args.rows_per_file < 1:
         parser.error("--limit and --rows-per-file must be positive")
@@ -77,16 +77,31 @@ def export_main() -> None:
                 table = TABLES[name]
                 manifest = export_table(table, database[table.source_collection], export_dir,
                                         hasher, options, stop)
-                summary = {k: manifest[k] for k in ("table", "rows", "bytes", "content_sha256", "seconds",
-                                                    "conversions")}
-                if args.verify:
-                    summary["verified"] = verify_export(export_dir / name)
-                results.append(summary)
+                results.append({k: manifest[k] for k in ("table", "rows", "bytes", "content_sha256", "seconds",
+                                                         "conversions")})
     except ExportInterrupted as exc:
         parser.exit(EXIT_INTERRUPTED, f"{exc}\n")
     except (ValueError, ExportError, StateError, PyMongoError, OSError) as exc:
         parser.exit(EXIT_FAILED, f"export failed ({type(exc).__name__}): {exc}\n")
     print(json.dumps(results, indent=2))
+
+
+def verify_main() -> None:
+    """Check a finished export against its manifests and the committed schemas, without decoding rows."""
+    parser = argparse.ArgumentParser(description=verify_main.__doc__)
+    parser.add_argument("directory", type=Path,
+                        help="a table export directory, or an export directory holding several tables")
+    parser.add_argument("--full", action="store_true",
+                        help="also decode every record (slow; to test the Avro library, e.g. after an upgrade)")
+    parser.add_argument("--schema-dir", type=Path, default=SCHEMA_DIR, help="committed Avro schemas")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    try:
+        results = [verify_table(directory, args.schema_dir, full=args.full)
+                   for directory in table_directories(args.directory)]
+    except (VerificationError, OSError, ValueError, KeyError) as exc:
+        parser.exit(EXIT_FAILED, f"verification failed ({type(exc).__name__}): {exc}\n")
+    print(json.dumps([vars(result) for result in results], indent=2))
 
 
 def schemas_main() -> None:

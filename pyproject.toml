@@ -25,6 +25,7 @@ load-summary = "glamira_pipeline.load.cli:load_main"
 reconcile-summary = "glamira_pipeline.load.cli:reconcile_main"
 profile-schema = "glamira_pipeline.profiling.cli:main"
 export-avro = "glamira_pipeline.export.cli:export_main"
+verify-export = "glamira_pipeline.export.cli:verify_main"
 write-raw-schemas = "glamira_pipeline.export.cli:schemas_main"
 
 [build-system]

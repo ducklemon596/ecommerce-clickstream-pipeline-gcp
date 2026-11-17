@@ -12,6 +12,7 @@ Rerunning the same command resumes: committed chunks are verified and
 skipped, an uncommitted chunk is deleted and redone. Transient MongoDB errors
 retry the open chunk with backoff. Contract violations, count mismatches and
 state inconsistencies stop the run. See docs/decisions/export_retry_idempotency.md.
+``verify-export`` (export/verify.py) checks a finished export again later.
 """
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
-import json
 import logging
 from pathlib import Path
 import random
@@ -28,11 +28,10 @@ import time
 import zlib
 
 import fastavro
-from fastavro import reader as avro_reader
 from pymongo.collection import Collection
 from pymongo.errors import AutoReconnect, CursorNotFound
 
-from glamira_pipeline.export.avro_files import CODEC, AvroPartWriter, PartFile, part_dicts
+from glamira_pipeline.export.avro_files import CODEC, AvroPartWriter, part_dicts
 from glamira_pipeline.export.chunks import Chunk, plan_chunks
 from glamira_pipeline.export.convert import Converter, SchemaViolation, check_rules
 from glamira_pipeline.export.pii import PiiHasher
@@ -261,35 +260,6 @@ def content_sha256(files: list[dict]) -> str:
     """
     lines = sorted(f"{part['name']} {part['sha256']}" for part in files)
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()
-
-
-def verify_export(directory: Path) -> dict:
-    """Re-read every part of a finished export; check checksums, row counts and the writer schema."""
-    manifest = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
-    expected = json.loads((directory / f"{manifest['table']}.avsc").read_text(encoding="utf-8"))
-    names = {expected["name"], f"{expected['namespace']}.{expected['name']}"}
-    rows = 0
-    for part in (PartFile(**p) for p in manifest["files"]):
-        path = directory / part.name
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            while block := stream.read(1024 * 1024):
-                digest.update(block)
-        if digest.hexdigest() != part.sha256:
-            raise ExportError(f"{part.name}: checksum differs from the manifest")
-        with path.open("rb") as stream:
-            part_reader = avro_reader(stream)
-            if part_reader.writer_schema.get("name") not in names:
-                raise ExportError(f"{part.name}: unexpected writer schema")
-            count = sum(1 for _ in part_reader)
-        if count != part.rows:
-            raise ExportError(f"{part.name}: {count} rows, manifest says {part.rows}")
-        rows += count
-    if rows != manifest["rows"]:
-        raise ExportError(f"{rows} rows in parts, manifest says {manifest['rows']}")
-    if content_sha256(manifest["files"]) != manifest["content_sha256"]:
-        raise ExportError("content_sha256 does not match the listed parts")
-    return {"table": manifest["table"], "files": len(manifest["files"]), "rows": rows, "ok": True}
 
 
 def _selection(options: ExportOptions) -> str:

@@ -63,6 +63,7 @@ flowchart LR
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
 | 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
 | 5 | Export the raw layer | `uv run export-avro --table all --output-dir … --export-id …` | Full, read only, in day chunks; rerun to resume (`--limit N` for a labelled sample) | Avro parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md), [run report](docs/reports/full_export_avro.md) |
+| 5b | Verify a stored export | `uv run verify-export <export dir>` | Checksums and inventory, no decoding (`--full` decodes every record) | Pass or exit 1 with the first difference |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -106,7 +107,7 @@ Details and caveats:
 - **Reconciliation, not exit codes.**
   - Counts are checked after every full run: 19,557 product documents = 19,557 input IDs; option rows reconcile with `option_count`; IP frequencies reconcile with the 41,432,473 scanned events.
   - IP output is verified in a staging collection before publication.
-- **A typed raw contract.** The export refuses unknown keys, unplanned types and missing REQUIRED values, counts every conversion, and verifies each Avro part after writing. One declaration generates the Avro schema, the BigQuery schema and the converter.
+- **A typed raw contract.** The export refuses unknown keys, unplanned types and missing REQUIRED values, counts every conversion, and records the SHA-256 of each Avro part; `verify-export` re-checks a stored export against its manifest and the committed schemas. One declaration generates the Avro schema, the BigQuery schema and the converter.
 - **Resumable, deterministic export.** Events are exported in one chunk per day of `_id`, each committed by a marker written after its parts. A rerun verifies and skips committed chunks and redoes only the open one; the same inputs give byte-identical files.
 - **Provenance.** Each run is recorded in `enrichment_runs`:
   - its parameters;
@@ -171,6 +172,7 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 
 export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
 uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17   # ~2 h, read only; rerun to resume
+uv run verify-export /data/glamira/exports/2026-11-17          # checksums and inventory, seconds; --full decodes
 ```
 
 | Concern | How it is handled |
@@ -218,6 +220,5 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Make verification cheaper: count rows from Avro block headers instead of decoding every row again.
   - Upload to GCS, do a small BigQuery test load, then load the raw dataset.
   - Use least-privilege MongoDB users for profiling and crawling.

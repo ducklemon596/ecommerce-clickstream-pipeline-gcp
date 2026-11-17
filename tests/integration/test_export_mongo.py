@@ -18,11 +18,12 @@ import fastavro
 from pymongo.errors import AutoReconnect
 
 from glamira_pipeline.export.chunks import CoverageError
-from glamira_pipeline.export.exporter import (MANIFEST, ExportError, ExportInterrupted, ExportOptions,
-                                              export_table, verify_export)
+from glamira_pipeline.export.cli import SCHEMA_DIR
+from glamira_pipeline.export.exporter import MANIFEST, ExportError, ExportInterrupted, ExportOptions, export_table
 from glamira_pipeline.export.pii import PiiHasher
 from glamira_pipeline.export.state import SUCCESS, StateError
 from glamira_pipeline.export.tables import EVENTS
+from glamira_pipeline.export.verify import verify_table
 from glamira_pipeline.mongo import connect
 
 URI = os.environ.get("GLAMIRA_TEST_MONGODB_URI")
@@ -98,7 +99,7 @@ class ExportMongoIntegrationTests(unittest.TestCase):
         self.assertEqual(manifest["source"]["documents"], 2_400)
         self.assertEqual(len(manifest["files"]), 6)  # 800 rows per day, 500 per file
         self.assertEqual(manifest["conversions"]["order_id: double -> string"], 800)
-        self.assertEqual(verify_export(self.out / "events")["rows"], 2_400)
+        self.assertEqual(verify_table(self.out / "events", SCHEMA_DIR, full=True).rows, 2_400)
         with (self.out / "events" / "chunk=2020-04-01" / "part-00000.avro").open("rb") as stream:
             rows = list(fastavro.reader(stream))
         self.assertEqual([r["_id"] for r in rows], sorted(r["_id"] for r in rows))
@@ -127,7 +128,7 @@ class ExportMongoIntegrationTests(unittest.TestCase):
         resumed = self.export()
         self.assertEqual(json.loads((target / "chunk=2020-04-01" / SUCCESS).read_text())["committed_at"], committed_at)
         self.assertEqual(resumed["content_sha256"], clean["content_sha256"])
-        self.assertEqual(verify_export(target)["rows"], 2_400)
+        self.assertEqual(verify_table(target, SCHEMA_DIR).rows, 2_400)
 
     def test_transient_error_retries_the_chunk(self):
         slept = []

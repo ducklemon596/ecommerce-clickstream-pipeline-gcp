@@ -5,10 +5,11 @@
 
 ## Context
 
-The export reads 45.6 M documents, 41.4 M of them events, and runs for about an hour. The first exporter could not be resumed:
-- a failure late in `events` restarted the whole table;
-- a transient MongoDB error failed the whole run;
-- the same data gave different bytes on each run, because of natural-order reads and random Avro sync markers.
+The export reads 45.6 M documents, 41.4 M of them events, and runs for about an hour. Several things must not force a restart from zero or duplicate data:
+- a crash, an SSH drop or a transient MongoDB error late in `events`;
+- an upload retry or a BigQuery load retry.
+
+Two sources of variation would otherwise make outputs differ: MongoDB's natural order is not stable, and fastavro writes random sync markers.
 
 The design goals are:
 
@@ -87,7 +88,7 @@ The same inputs always give the same bytes, from any process and with any worker
 - each part's sync marker is `SHA-256("<table>/<chunk>/<part>")[:16]`;
 - the file header embeds the schema exactly as declared.
 
-**Why the third rule exists.** fastavro writes `json.dumps(schema)` into the header. A schema it has *parsed* has a key order that depends on Python's per-process hash seed. The first parallel test found this: rows were equal, hashes differed. A unit test now writes headers under four `PYTHONHASHSEED` values and requires one hash. Exports written before this fix use the other header form, so they need a new export ID.
+**Why the third rule exists.** fastavro writes `json.dumps(schema)` into the header. A schema it has *parsed* has a key order that depends on Python's per-process hash seed, so worker processes would write different headers for equal rows. A unit test writes headers under four `PYTHONHASHSEED` values and requires one hash.
 
 **What this makes possible:**
 - a chunk can be compared to a committed one by hash alone;
@@ -160,7 +161,7 @@ Convert and write are CPU-bound Python, so chunks run in **spawned processes**, 
 | Chunks by `time_stamp` | Needs a new index on 41 M documents; `_id` ranges are free |
 | Chunks of a fixed document count | Boundaries would depend on read order; day ranges are fixed by the data |
 | Threads instead of processes | Conversion is CPU-bound Python and would share one core |
-| Re-reading every part inside the export | Took about 20 of 127 minutes in the first full run. The SHA-256 is computed while writing, and `verify-export` checks it later in 53 s |
+| Decoding every part again inside the export | About 21 min per full run. The SHA-256 is computed while writing, and `verify-export` checks it in 53 s; decoding stays available as `--full` |
 | Append loads plus dbt deduplication, or `MERGE` on `_id` | Moves duplicates downstream, or scans the whole target on every load; the export is a full snapshot |
 
 ## Consequences and limits

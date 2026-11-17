@@ -1,64 +1,88 @@
-# Full Avro export: measured runs
+# Full Avro export: measured result
 
-All runs exported the four raw tables from `countly` on the project VM (e2-standard-4: 4 vCPU, 16 GB RAM), reading the local MongoDB 8.0 and writing to the data disk. The page cache was dropped before each run.
+**Observed:** 2026-11-17 on the project VM.
+**Outcome:** with `--workers 3`, the four raw tables were exported in **52 min 46 s** and verified in **53 s**:
+- 45,614,951 rows, 9.30 GB;
+- 0 contract violations, no retries.
 
-| Run | Date (UTC) | Commit | Command |
-| --- | --- | --- | --- |
-| **A**, one process, verification inside the export | 2026-11-17, 08:05–10:12 | `351a36a` | `export-avro --table all … --export-id full-2026-11-17` |
-| **B**, three workers, separate verification | 2026-11-17, 11:04–11:58 | `a4ac6e2` | `export-avro --table all … --export-id full-2026-11-17-w3 --workers 3`, then `verify-export` |
+How the export works and how to run it are in the [raw layer contract](../raw_layer_contract.md#6-export-run-files-and-checks); the design is in the [decision record](../decisions/export_retry_idempotency.md).
 
-## Result
+## 1. How a run works
 
-| Check | Run A | Run B |
-| --- | --- | --- |
-| Exit code | 0 | 0, and 0 for `verify-export` |
-| Rows | 45,614,951, equal to the source counts of all four collections | same |
-| Contract violations | 0 (a violation stops the export) | 0 |
-| Retries | none: every chunk committed on attempt 1 | none |
-| Output | 9.30 GB in 71 parts | 9.30 GB in 71 parts. Each header differs by a few bytes (32 fewer per `events` part), because headers now embed the schema as declared (see the [decision record](../decisions/export_retry_idempotency.md)) |
-| Peak memory | 112 MB | 102 MB in the parent; the workers were not measured |
-| **Wall time** | **2 h 06 min 33 s** | **52 min 46 s** for the export, plus **53 s** for `verify-export` |
+```mermaid
+flowchart LR
+    M[(MongoDB countly)] -->|plan: count each _id day| P[65 event chunks<br/>+ 1 per small table]
+    P --> W1[worker 1] & W2[worker 2] & W3[worker 3]
+    W1 & W2 & W3 -->|read sorted by _id → convert + HMAC → Avro parts| C[chunk=…/_SUCCESS.json]
+    C --> F[_manifest.json]
+    F --> V[verify-export<br/>inventory + SHA-256 + schema]
+```
 
-## Where the time goes
+1. **Plan.** `events` is split into one chunk per UTC day of `_id` (65 chunks). Each range is counted, and the counts must add up to the collection count. The other tables are one chunk each.
+2. **Export.** Each worker process exports whole chunks:
+   - it reads the range sorted by `_id`;
+   - it checks every document against the contract and pseudonymizes PII;
+   - it writes deflate Avro parts and commits the chunk with a marker that lists each part's SHA-256.
+3. **Complete.** When every chunk is committed, the table's `_manifest.json` is written.
+4. **Verify.** `verify-export` checks each table directory against its manifest: the inventory in both directions, the size and SHA-256 of each part, and the schema against the committed `schemas/raw/*.avsc`. It does not decode rows.
 
-| Step | Run A | Run B |
-| --- | --- | --- |
-| Planning `events`: count the 65 day ranges, write the identity | about 30 s | about 17 s |
-| Export `events` | 1 h 41 min (6,086 s) | **49 min (2,948 s)**, 3 workers |
-| Verify `events` | about 20 min (re-hash and decode all 41.4 M rows) | not part of the export |
-| `ip_locations` | 2 min 15 s | 2 min 16 s |
-| `product_option_values` | 1 min 17 s | 1 min 16 s |
-| `products` | 5 s | 5 s |
-| Verify all tables | about 21 min in total | **53 s** with `verify-export` (inventory, sizes, SHA-256 of 9.30 GB, schemas; no decoding) |
+## 2. Environment
 
-The three small tables are one chunk each, so they run on one worker in both runs.
+| Item | Value |
+| --- | --- |
+| VM | e2-standard-4: 4 shared vCPU, 16 GB RAM. MongoDB 8.0 on the same VM |
+| Source | `countly.summary` (41,432,473), `ip_locations` (3,239,627), `product_option_values` (923,294), `products` (19,557) |
+| Output | VM data disk, the same disk as the MongoDB data |
+| Method | One run per configuration, each with the page cache dropped first. Times are from the manifests and from `/usr/bin/time -v` |
 
-**`events` per stage**, summed over chunks. With three workers these are worker-seconds, not wall time.
+## 3. Results: one worker against three workers
 
-| Stage | Run A | Run B |
-| --- | --- | --- |
-| Read from MongoDB | 836 s (14%) | 1,075 s (13%) |
-| Convert (contract and HMAC) | 2,883 s (47%) | 4,254 s (50%) |
-| Write (Avro encoding, deflate, file) | 2,367 s (39%) | 3,261 s (38%) |
-| **Total** | 6,086 s; 6,808 rows/s | 8,590 worker-seconds; 4,823 rows/s per worker, **14,054 rows/s overall** |
+The two runs exported the same data with the same contract and the same chunk plan.
+- **Run 1** used one process, at commit `351a36a`. It also decoded every row again inside the export. That step now runs separately as `verify-export --full`.
+- **Run 2** used `--workers 3`, at commit `a4ac6e2`, followed by `verify-export`.
 
-## Findings
+| | Run 1: one worker | Run 2: three workers | Change |
+| --- | ---: | ---: | ---: |
+| Rows written | 45,614,951 | 45,614,951 | equal |
+| Output | 9.30 GB in 71 parts | 9.30 GB in 71 parts | equal |
+| Contract violations / retries | 0 / 0 | 0 / 0 | — |
+| Plan `events` (count 65 day ranges) | about 30 s | about 17 s | — |
+| **Export `events`** | **1 h 41 min** (6,086 s) | **49 min** (2,948 s) | **2.06× faster** |
+| Export the 3 small tables | 3 min 37 s | 3 min 37 s | equal (one chunk each) |
+| Verification | about 21 min (decode every row) | **53 s** (`verify-export`) | about 24× faster |
+| **End to end** | **2 h 06 min 33 s** | **53 min 39 s** | **2.4× faster** |
+| `events` throughput | 6,808 rows/s | 14,054 rows/s | ×2.06 |
+| Peak memory | 112 MB | 102 MB in the parent; workers not measured | — |
 
-- **Three workers made `events` 2.06× faster, not 3×.**
-  - Each worker processed rows about 30% slower than the single process did: 8,590 worker-seconds against 6,086 s.
-  - The export ran at 262% CPU on a 4-vCPU VM shared with `mongod`, and e2 vCPUs are shared cores.
-  - The earlier estimate of 35–40 min for `events` was optimistic; the measured time is 49 min.
-- **Convert and write remain the bottleneck.** Reading from MongoDB is 13–14% of the work in both runs, so `_id`-range reads are not what limits the export.
-- **Verification is now cheap.** Re-hashing 9.30 GB and checking the inventory takes 53 s. Decoding every row again took about 20 min. That decode is still available as `verify-export --full`, but was not timed on the full data.
-- **The export is about 2.4× faster end to end:** 2 h 06 min → 53 min 39 s, including verification.
-- **Output identity.**
-  - Run B's `content_sha256` differs from run A's because the header fix changed every file; the table row counts are equal.
-  - The parallel and single-process runs were compared for byte identity in the integration tests, not on the full data.
+**Where `events` time goes**, summed over chunks. With three workers these are worker-seconds, not wall time.
 
-## Limitations
+| Stage | Run 1 | Run 2 | Per-worker slowdown |
+| --- | ---: | ---: | ---: |
+| Read from MongoDB | 836 s (14%) | 1,075 s (13%) | +29% |
+| Convert (contract and HMAC) | 2,883 s (47%) | 4,254 s (50%) | +48% |
+| Write (Avro encoding, deflate, file) | 2,367 s (39%) | 3,261 s (38%) | +38% |
+| **Total** | **6,086 s** | **8,590 s** | **+41%** |
 
-- **One run per configuration, not a benchmark series.** Timings vary with the shared CPU and the disk cache.
-- **Worker count not swept.** Only 1 and 3 workers were measured; 2 or 4 were not.
-- **No PII scan of the full output.** The check that decodes rows and looks for raw IPs, emails, device IDs and customer IDs was run on the 100K sample only.
-- **Not loaded yet.** The files have not been uploaded to GCS or loaded into BigQuery.
-- **Where the files are.** Run B's output (`full-2026-11-17-w3`, 8.7 GiB) is kept on the VM data disk under `benchmark-work/export/` for the upload. Run A's output was deleted on 2026-11-17 because its old header form cannot be resumed by the current code. Only this report is in the repository.
+Run 2's export process used 262% CPU on average. With 4 vCPU, that left roughly one core for `mongod` and the system.
+
+## 4. Findings
+
+- **Three workers gave 2.06×, not 3×.**
+  - Each worker processed rows about 30% slower than the single process, because the 4 shared vCPUs also run `mongod`.
+  - Two workers could at best reach 2×, and three already reached 2.06×. On this VM, 2 workers therefore cannot beat 3.
+- **MongoDB is not the bottleneck.**
+  - Reading is 13–14% of the work in both runs, and it slowed down the least.
+  - Convert slowed down the most: Python competing with Python for CPU.
+- **Convert is the main cost, at about half the work.** More speed needs more cores or less Python work per row, not faster reads.
+- **Verification by checksum is cheap.**
+  - Hashing 9.30 GB and checking the inventory takes 53 s.
+  - Decoding every row took about 21 min, and is only needed to test the Avro library itself.
+- **A crash costs little.** The largest `events` chunk (893,200 rows) took about 140 s in a single process. A crash loses at most the chunks that were open.
+
+## 5. Limitations
+
+- **One run per configuration.** Run-to-run variance on shared vCPUs was not measured.
+- **Worker counts not swept.** Only 1 and 3 workers were run.
+- **`verify-export --full` not timed on the full output.** On the 100K sample it took 1.6 s, against 0.1 s for the default check.
+- **PII scan on the sample only.** The scan of decoded rows for raw IPs, emails, device IDs and customer IDs ran on the 100K sample, not on the full output.
+- **Not uploaded or loaded.** Run 2's output (export ID `full-2026-11-17-w3`, 8.7 GiB) stays on the VM data disk for the GCS upload and BigQuery load. Only this report is in the repository.

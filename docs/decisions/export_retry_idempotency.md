@@ -204,6 +204,9 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 | Same command again | Removed the 2 uncommitted parts, redid the chunk, verified; `content_sha256` equal to the uninterrupted run |
 | Same command a third time | "already complete", nothing written |
 
-The cost of `_id` ranges on the full collection (section "Evidence") is still to be measured by the full run.
+**Full run on the VM** (2026-11-17, [report](../reports/full_export_avro.md)):
+- `events`: 65 chunks, 41,432,473 rows, all committed on attempt 1, in 1 h 41 min of export work.
+- Reading by `_id` range took 836 s, 14% of that time. Convert (47%) and write (39%) dominate, so the extra server cost of sorted range reads does not matter in practice.
+- The largest chunk took 140 s, which bounds the work a crash can cost.
 
 **Known gap:** the identity compares the Avro schema hash, not the converter code. Changing a conversion rule without changing the schema and then resuming an export would mix old and new chunks. Start a new export ID after any change to `export/`.

@@ -8,7 +8,7 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - exports it to Avro files that match the BigQuery raw-layer schema;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built and validated on a sample. The next stage is a full export, upload to GCS and loading into BigQuery; dbt and dashboards come after that.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built, and the full data has been exported with them. The next stage is upload to GCS and loading into BigQuery; dbt and dashboards come after that.
 
 ## Results at a glance
 
@@ -22,9 +22,9 @@ It answers to three business questions: geographic performance, product and cate
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
-| Avro export (100K sample) | 0 contract violations; 100,000 rows in 22.4 MB, re-read with matching checksums; no raw IP, email, device ID or customer ID in the files. Interrupted at 60,000 rows and resumed: same content hash as an uninterrupted run. The full export is not run yet |
+| Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 2 h 06 min on the VM, including about 21 min of re-reading for verification. 0 contract violations, no retries. On the 100K sample: no raw IP, email, device ID or customer ID in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
 
-Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample export ran on a local MongoDB. The reports linked below hold the full numbers.
+Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ flowchart LR
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
 | 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
-| 5 | Export the raw layer | `uv run export-avro --table all --output-dir … --export-id …` | Full, read only, in day chunks; rerun to resume (`--limit N` for a labelled sample) | Avro parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md) |
+| 5 | Export the raw layer | `uv run export-avro --table all --output-dir … --export-id …` | Full, read only, in day chunks; rerun to resume (`--limit N` for a labelled sample) | Avro parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md), [run report](docs/reports/full_export_avro.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -170,7 +170,7 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
   --delay 0.2 --jitter 0.1 --concurrency 6 --block-retries 3   # ~80 min; rerun to resume
 
 export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
-uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17   # read only; rerun to resume
+uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17   # ~2 h, read only; rerun to resume
 ```
 
 | Concern | How it is handled |
@@ -198,7 +198,7 @@ src/glamira_pipeline/
 schemas/raw/        # generated Avro (.avsc) and BigQuery (.bq.json) schemas
 docs/
 ├── raw_layer_contract.md
-├── reports/        # measured results (data quality, scope, product IDs, full load)
+├── reports/        # measured results (data quality, scope, product IDs, full load, full export)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
 tests/integration/  # need a disposable local MongoDB
@@ -218,6 +218,6 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Run the Avro export on the full data (all four tables) and record its measurements.
+  - Make verification cheaper: count rows from Avro block headers instead of decoding every row again.
   - Upload to GCS, do a small BigQuery test load, then load the raw dataset.
   - Use least-privilege MongoDB users for profiling and crawling.

@@ -333,7 +333,10 @@ uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
 - Conversion counts per path, the Avro schema SHA-256, and the PII key fingerprint.
 - The git SHA, timestamps, and time spent reading, converting and writing.
 
-**Measured performance:** 100,000 sample events in 6.5 s of work (read 0.5, convert 3.3, write 2.7), so about 15,000 rows/s on one core. 22.4 MB of Avro, which extrapolates to about 9 GB and roughly 45–55 minutes for the 41.4 M events. This is an extrapolation; the full run has not been measured yet.
+**Measured performance** (full run on the project VM, 2026-11-17; [report](reports/full_export_avro.md)):
+- All four tables: 45,614,951 rows, 9.30 GB, 2 h 06 min wall time, 0 violations, no retries.
+- `events`: 1 h 41 min of export work, about 6,800 rows/s on one core. Convert takes 47%, write 39% and read 14%.
+- Verification of `events` adds about 20 min.
 
 **Exit codes**
 
@@ -380,7 +383,7 @@ bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUM
 
 ## 9. Known limitations
 
-- **Single-threaded export.** About 15,000 rows/s, so the 41.4 M events take on the order of 45–55 minutes. Chunks are independent and could run in parallel, but this is not built. A crash costs at most one chunk (one day of events, up to 893,200 rows).
+- **Single-threaded export.** About 6,800 rows/s on the VM, so the 41.4 M events take 1 h 41 min plus about 20 min of verification. Chunks are independent and could run in parallel, but this is not built. A crash costs at most one chunk (one day of events, up to 893,200 rows, about 2.5 min).
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.
-- **Full validation pending.** The contract has been checked against full-data type profiles, but a full export has not yet been run end to end.
+- **Not yet loaded.** The full export completed with 0 contract violations, but it has not been loaded into BigQuery, and the full output has not been scanned for raw PII (only the 100K sample was).

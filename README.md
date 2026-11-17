@@ -1,13 +1,13 @@
 # Glamira event pipeline
 
-Batch data engineering on **41.4 million e-commerce tracking events** from Glamira, an online jewellery retailer, collected in October–November 2019. The events lack two dimensions that analysis needs: *where* a visitor was and *what* product they looked at. This repository:
+Batch data engineering on **41.4 million e-commerce tracking events** from Glamira, an online jewellery retailer, recorded from 2020-04-01 to 2020-06-04 (UTC). The archive name says October–November 2019, but every `time_stamp` falls in this range. The events lack two dimensions that analysis needs: *where* a visitor was and *what* product they looked at. This repository:
 
 - profiles the data;
 - loads and validates it in MongoDB;
 - enriches it with IP geolocation and product attributes;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. Loading into GCS → BigQuery → dbt → dashboards is the next stage and is **not** part of this repository.
+It answers to three business questions: geographic performance, product and category performance, and time trends. Export to GCS and loading into BigQuery are the next stage: the Avro format and the raw-table schema are decided ([decision record](docs/decisions/raw_events_schema.md)), the export itself is not built yet. dbt and dashboards come after that.
 
 ## Results at a glance
 
@@ -15,6 +15,7 @@ It answers to three business questions: geographic performance, product and cate
 | --- | --- |
 | Source | `countly.summary`: 41,432,473 events restored from a BSON dump (33.5 GB uncompressed) |
 | Full load | `load-summary` loads all 41,432,473 events in 8 min 41 s and resumes after a crash. Measured in a separate benchmark database; the existing `countly.summary` was restored earlier with `mongorestore` (14 min 51 s, 0 failures). `reconcile-summary` confirms totals, all 27 event-type counts, and 1,000 / 1,000 byte-identical sampled documents |
+| Schema profile (full data) | 27 event types, 52 field paths; 6 fields with mixed types. Documented in the [data dictionary](docs/data_dictionary.md) |
 | Data quality (100K sample) | 7 checks: top-level null rates, duplicate IDs and IP/time pairs, timestamps, price signs, currencies, IP syntax |
 | IP geolocation | 3,239,627 unique IPs resolved offline. Coverage: 98.88% of events, 98.82% of unique IPs (target ≥ 80%) |
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
@@ -76,9 +77,12 @@ Each step started with measurement on a sample, chose the simplest option that t
 | Crawl rate | 0.74 → 7.88 req/s ramp | Challenged at 7.4 req/s after earlier test load. No block at 3.8 req/s for 80 min | **About 4 req/s** with jitter; hard cap of 8 req/s |
 | Crawl checkpoint | Sorted-ID cursor, SQLite, the data itself | Concurrent workers finish out of order; a second store would drift from the data | **The written documents are the checkpoint**: crawl `input − finished` |
 | Storage target | Files during the crawl; MongoDB | MongoDB already hosts the source and provides upsert plus schema validation | **MongoDB now**; GCS/BigQuery export as a separate snapshot step |
+| Export format for GCS → BigQuery | JSONL; Avro | JSONL defers type errors to the BigQuery load and lets BigQuery coerce values implicitly. Avro checks every row against the schema when the file is written, and BigQuery reads compressed Avro in parallel | **Avro**, with one schema shared by Avro and the BigQuery raw table; [decision record](docs/decisions/raw_events_schema.md) (proposed) |
+| Personal data in BigQuery | Export as is; hash | Email and device ID are not needed in clear text for any business question | **HMAC-SHA256** of `email_address` and `device_id` with a secret key; `ip` kept for the geolocation join |
 
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
+- [Raw events schema decision record](docs/decisions/raw_events_schema.md)
 - [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
 
 ## How data correctness is ensured
@@ -198,8 +202,8 @@ tests/integration/  # need a disposable local MongoDB
 ## Limitations and next steps
 
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
-- **Catalog dates:** the product catalog and prices are from 2026, not 2019. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
+- **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Export snapshots to GCS and load them into BigQuery, deciding the `gender` representation there.
-  - Write a data dictionary of all collections.
+  - Implement the Avro export with the proposed raw schema, validate it on all 41.4M events, and load it into BigQuery after a small test load.
+  - Decide the `gender` representation of `products` in BigQuery.
   - Use least-privilege MongoDB users for profiling and crawling.

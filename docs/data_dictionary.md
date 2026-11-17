@@ -256,6 +256,6 @@ Counts are from the full scan unless marked *sample*. The sample reports are in 
 
 ## Limitations
 
-- The full profile measures presence, nulls and types. It does not measure value ranges or distinct values. The `time_stamp` range, the full currency distribution and price parsing were measured only on the sequential 100K sample.
+- The full profile measures presence, nulls and types. A later read-only scan (2026-11-16, see the [raw schema decision record](decisions/raw_events_schema.md)) measured a few value facts on all events: `time_stamp` spans 2020-04-01 00:00:01 to 2020-06-04 10:21:32 UTC, every numeric `order_id` is integral, and `utm_*` bools are always `false`. The full currency distribution and price parsing were measured only on the sequential 100K sample.
 - Inferred meanings should be confirmed with the event producer.
 - Enrichment counts are from their own run verifications (`ip_locations` on 2026-11-04, `products` on 2026-11-13), not re-counted on 2026-11-14.

@@ -9,6 +9,8 @@ authors = [
 requires-python = ">=3.10"
 dependencies = [
     "fastavro>=1.12.2",
+    "google-cloud-bigquery>=3.47.0",
+    "google-cloud-storage>=3.17.1",
     "ip2location>=8.11.0",
     "pymongo>=4.18.3",
 ]
@@ -27,7 +29,13 @@ profile-schema = "glamira_pipeline.profiling.cli:main"
 export-avro = "glamira_pipeline.export.cli:export_main"
 verify-export = "glamira_pipeline.export.cli:verify_main"
 write-raw-schemas = "glamira_pipeline.export.cli:schemas_main"
+publish-export = "glamira_pipeline.warehouse.cli:publish_main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "functions-framework>=3.10.2",
+]

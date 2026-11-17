@@ -349,10 +349,11 @@ The default never decodes rows: the SHA-256 covers every byte that was counted a
 - Conversion counts per path, the Avro schema SHA-256, and the PII key fingerprint.
 - The git SHA, timestamps, and time spent reading, converting and writing.
 
-**Measured performance** (full run on the project VM, 2026-11-17; [report](reports/full_export_avro.md)):
-- All four tables: 45,614,951 rows, 9.30 GB, 2 h 06 min wall time, 0 violations, no retries.
-- `events`: 1 h 41 min of export work, about 6,800 rows/s on one core. Convert takes 47%, write 39% and read 14%.
-- Verification of `events` adds about 20 min.
+**Measured performance** (full runs on the project VM, 2026-11-17; [report](reports/full_export_avro.md)):
+- All four tables: 45,614,951 rows, 9.30 GB, 0 violations, no retries.
+- With `--workers 3`: 52 min 46 s wall time; `events` takes 49 min at 14,054 rows/s overall. With one worker it took 1 h 41 min at 6,808 rows/s.
+- Convert takes about 50% of the work, write 38% and read 13%.
+- `verify-export` of all tables takes 53 s.
 
 **Exit codes**
 
@@ -399,7 +400,7 @@ bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUM
 
 ## 9. Known limitations
 
-- **CPU-bound export.** About 6,800 rows/s per worker on the VM. Chunks run in parallel with `--workers`; the speed-up is bounded by the VM's cores, the largest day (893,200 rows) and `mongod` sharing the CPU. A crash costs at most the chunks that were open (one day each, up to about 2.5 min of work).
+- **CPU-bound export.** Three workers made `events` 2.06× faster, not 3×: each worker ran about 30% slower than a single process, on 4 shared vCPUs that `mongod` also uses. More speed needs more cores, or less Python work per row. A crash costs at most the chunks that were open (one day each, up to about 2.5 min of work).
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.
 - **Not yet loaded.** The full export completed with 0 contract violations, but it has not been loaded into BigQuery, and the full output has not been scanned for raw PII (only the 100K sample was).

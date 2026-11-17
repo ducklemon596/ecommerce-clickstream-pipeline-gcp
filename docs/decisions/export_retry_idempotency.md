@@ -210,6 +210,7 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 - `events`: 65 chunks, 41,432,473 rows, all committed on attempt 1, in 1 h 41 min of export work.
 - Reading by `_id` range took 836 s, 14% of that time. Convert (47%) and write (39%) dominate, so the extra server cost of sorted range reads does not matter in practice.
 - The largest chunk took 140 s, which bounds the work a crash can cost.
+- With `--workers 3` (commit `a4ac6e2`), `events` took 49 min instead of 1 h 41 min, and `verify-export` checked all four tables in 53 s instead of about 21 min of in-run decoding. Every chunk again committed on attempt 1.
 
 **Determinism across processes (found while adding workers).** The first parallel test produced a different `content_sha256` than a single-process run, with equal rows. fastavro embeds `json.dumps(schema)` in each file header, and the exporter passed it the *parsed* schema, whose key order (`doc`, `default`) depends on Python's per-process hash seed. Runs in one process were consistent, so the earlier resume check (two processes, equal hashes) passed by chance. The writer now passes the schema exactly as declared, and a unit test writes headers under four `PYTHONHASHSEED` values and requires one hash. Exports written before this fix have the other header form; they stay valid Avro, but mixing them with new chunks under one export ID breaks byte identity, so use a new export ID.
 

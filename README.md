@@ -22,7 +22,7 @@ It answers to three business questions: geographic performance, product and cate
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
-| Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 2 h 06 min on the VM, including about 21 min of re-reading for verification. 0 contract violations, no retries. On the 100K sample: no raw IP, email, device ID or customer ID in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
+| Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 53 min on the VM with 3 workers (one process: 1 h 41 min for `events` alone), plus 53 s for `verify-export`. 0 contract violations, no retries. On the 100K sample: no raw IP, email, device ID or customer ID in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
 
 Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
 
@@ -171,8 +171,8 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
   --delay 0.2 --jitter 0.1 --concurrency 6 --block-retries 3   # ~80 min; rerun to resume
 
 export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
-uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17 --workers 3   # read only; rerun to resume
-uv run verify-export /data/glamira/exports/2026-11-17          # checksums and inventory, seconds; --full decodes
+uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17 --workers 3   # ~53 min, read only; rerun to resume
+uv run verify-export /data/glamira/exports/2026-11-17          # ~1 min: checksums and inventory; --full decodes
 ```
 
 | Concern | How it is handled |

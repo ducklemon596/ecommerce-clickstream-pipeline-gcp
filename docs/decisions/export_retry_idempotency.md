@@ -183,6 +183,7 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 | [`export/avro_files.py`](../../src/glamira_pipeline/export/avro_files.py) | Sync marker derived from `<table>/<chunk>/<part>` |
 | [`export/exporter.py`](../../src/glamira_pipeline/export/exporter.py) | Chunk loop, retries on `AutoReconnect` and `CursorNotFound`, manifest with `content_sha256` |
 | [`export/cli.py`](../../src/glamira_pipeline/export/cli.py) | `--export-id`; rerunning the same command resumes |
+| [`export/parallel.py`](../../src/glamira_pipeline/export/parallel.py) | `--workers N`: chunks in spawned processes, each with its own `MongoClient`. Workers ignore SIGINT; on a signal or the first failing chunk the parent sets a shared stop event, running chunks stop uncommitted and queued ones are cancelled. State, markers and manifest are unchanged |
 | [`export/verify.py`](../../src/glamira_pipeline/export/verify.py) | `verify-export`: inventory both ways, SHA-256, schema against the repository; `--full` decodes. Separate from the export, which no longer re-reads its output (that took about 20 min of the first full run) |
 | `load/bigquery.py` | **Not built yet** (needs `google-cloud-bigquery` and a dataset): deterministic job ID, `WRITE_TRUNCATE_DATA`, `409` handling, count check |
 
@@ -209,5 +210,7 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 - `events`: 65 chunks, 41,432,473 rows, all committed on attempt 1, in 1 h 41 min of export work.
 - Reading by `_id` range took 836 s, 14% of that time. Convert (47%) and write (39%) dominate, so the extra server cost of sorted range reads does not matter in practice.
 - The largest chunk took 140 s, which bounds the work a crash can cost.
+
+**Determinism across processes (found while adding workers).** The first parallel test produced a different `content_sha256` than a single-process run, with equal rows. fastavro embeds `json.dumps(schema)` in each file header, and the exporter passed it the *parsed* schema, whose key order (`doc`, `default`) depends on Python's per-process hash seed. Runs in one process were consistent, so the earlier resume check (two processes, equal hashes) passed by chance. The writer now passes the schema exactly as declared, and a unit test writes headers under four `PYTHONHASHSEED` values and requires one hash. Exports written before this fix have the other header form; they stay valid Avro, but mixing them with new chunks under one export ID breaks byte identity, so use a new export ID.
 
 **Known gap:** the identity compares the Avro schema hash, not the converter code. Changing a conversion rule without changing the schema and then resuming an export would mix old and new chunks. Start a new export ID after any change to `export/`.

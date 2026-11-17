@@ -10,7 +10,8 @@ Output layout, one directory per table inside an export directory::
 
 Rerunning the same command resumes: committed chunks are verified and
 skipped, an uncommitted chunk is deleted and redone. Transient MongoDB errors
-retry the open chunk with backoff. Contract violations, count mismatches and
+retry the open chunk with backoff. With ``workers > 1`` chunks run in parallel
+processes (export/parallel.py) under the same protocol. Contract violations, count mismatches and
 state inconsistencies stop the run. See docs/decisions/export_retry_idempotency.md.
 ``verify-export`` (export/verify.py) checks a finished export again later.
 """
@@ -28,12 +29,14 @@ import time
 import zlib
 
 import fastavro
+from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import AutoReconnect, CursorNotFound
 
 from glamira_pipeline.export.avro_files import CODEC, AvroPartWriter, part_dicts
 from glamira_pipeline.export.chunks import Chunk, plan_chunks
 from glamira_pipeline.export.convert import Converter, SchemaViolation, check_rules
+from glamira_pipeline.export.parallel import ChunkJob, export_chunks_in_processes
 from glamira_pipeline.export.pii import PiiHasher
 from glamira_pipeline.export.schema import Table, avro_schema, bigquery_schema, schema_fingerprint, schema_json
 from glamira_pipeline.export.state import (claim_identity, commit_chunk, committed_chunk, exclusive_lock, read_json,
@@ -56,9 +59,14 @@ class ExportInterrupted(ExportError):
 
 @dataclass(frozen=True)
 class ExportOptions:
-    """``limit`` exports only the first N documents by ``_id`` (a non-random sample)."""
+    """``limit`` exports only the first N documents by ``_id`` (a non-random sample).
+
+    ``workers`` processes export chunks in parallel; the output does not
+    depend on it, so it is not part of the export identity.
+    """
 
     rows_per_file: int = 1_000_000
+    workers: int = 1
     limit: int | None = None
     batch_size: int = 10_000
     max_attempts: int = 3
@@ -75,9 +83,18 @@ def write_schema_files(table: Table, directory: Path) -> None:
 def export_table(table: Table, collection: Collection, export_dir: Path, hasher: PiiHasher,
                  options: ExportOptions = ExportOptions(),
                  should_stop: Callable[[], bool] = lambda: False,
-                 sleep: Callable[[float], None] = time.sleep) -> dict:
-    """Export ``collection`` as ``table`` into ``export_dir/<table>``, resuming earlier attempts; return the manifest."""
+                 sleep: Callable[[float], None] = time.sleep,
+                 connect: Callable[[], MongoClient] | None = None) -> dict:
+    """Export ``collection`` as ``table`` into ``export_dir/<table>``, resuming earlier attempts; return the manifest.
+
+    ``connect`` opens a new client in each worker process. It must be
+    picklable (a module-level function or a ``functools.partial``) and is
+    required when ``options.workers > 1``.
+    """
     check_rules(table)
+    if options.workers > 1 and connect is None:
+        raise ValueError("connect is required when workers > 1")
+    run_started = time.monotonic()
     target = export_dir / table.name
     with exclusive_lock(target):
         source = mongo_collection_identity(collection)
@@ -101,11 +118,18 @@ def export_table(table: Table, collection: Collection, export_dir: Path, hasher:
             LOGGER.info("%s: already complete (%s rows); nothing to do", table.name, f"{manifest['rows']:,}")
             return manifest
         write_schema_files(table, target)
-        LOGGER.info("exporting %s -> %s: %d chunks, %s documents (%s)", collection.full_name, target,
-                    len(chunks), f"{sum(expected.values()):,}", identity["selection"])
-        exporter = _ChunkExporter(table, collection, target, hasher, options, should_stop, sleep)
-        markers = [exporter.run(chunk, expected[chunk.id]) for chunk in chunks]
+        workers = min(options.workers, len(chunks)) or 1
+        LOGGER.info("exporting %s -> %s: %d chunks, %s documents (%s), %d worker(s)", collection.full_name, target,
+                    len(chunks), f"{sum(expected.values()):,}", identity["selection"], workers)
+        if workers > 1:
+            job = ChunkJob(table, collection.database.name, collection.name, target, hasher, options)
+            markers = export_chunks_in_processes(job, chunks, expected, workers, connect, should_stop)
+        else:
+            exporter = ChunkExporter(table, collection, target, hasher, options, should_stop=should_stop, sleep=sleep)
+            markers = [exporter.run(chunk, expected[chunk.id]) for chunk in chunks]
         manifest = _manifest(table, export_dir.name, stored, markers, hasher)
+        manifest["workers"] = workers
+        manifest["wall_seconds"] = round(time.monotonic() - run_started, 1)
         if manifest["rows"] != sum(expected.values()):
             raise ExportError(f"{table.name}: chunks hold {manifest['rows']:,} rows, "
                               f"the plan expected {sum(expected.values()):,}")
@@ -114,11 +138,12 @@ def export_table(table: Table, collection: Collection, export_dir: Path, hasher:
         return manifest
 
 
-class _ChunkExporter:
-    """Commit one chunk at a time; retry transient MongoDB errors with backoff."""
+class ChunkExporter:
+    """Export and commit one chunk at a time; retry transient MongoDB errors with backoff."""
 
     def __init__(self, table: Table, collection: Collection, target: Path, hasher: PiiHasher,
-                 options: ExportOptions, should_stop: Callable[[], bool], sleep: Callable[[float], None]) -> None:
+                 options: ExportOptions, *, should_stop: Callable[[], bool] = lambda: False,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self.table, self.collection, self.target, self.hasher = table, collection, target, hasher
         self.options, self.should_stop, self.sleep = options, should_stop, sleep
         self.schema = avro_schema(table)

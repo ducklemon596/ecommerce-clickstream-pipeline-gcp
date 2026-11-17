@@ -288,7 +288,7 @@ Source: `countly.product_option_values`. Source types measured on 2026-11-17 ove
 
 ```bash
 export GLAMIRA_PII_HASH_KEY=...   # the project key, from a secret store
-uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
+uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17 --workers 3
 ```
 
 **Rerunning the same command resumes the export.** Committed chunks are verified and skipped; only uncommitted work is redone. The design is in the [retry and idempotency decision record](decisions/export_retry_idempotency.md).
@@ -301,6 +301,7 @@ uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
 | `--database` | `countly` | Source database |
 | `--limit N` | all | First N documents by `_id`, as one chunk. The manifest labels this a non-random sample |
 | `--rows-per-file` | 1,000,000 | Rows per Avro part |
+| `--workers` | 1 | Processes exporting chunks in parallel, each with its own MongoDB client. The output does not depend on it, and a resume may use another value. On the 4-vCPU VM, use 3 and leave a core for `mongod` |
 
 **Output per table**
 
@@ -319,7 +320,7 @@ uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
 1. Every document passes the contract, or the export stops at the first violation. The chunk gets no marker and the table no manifest.
 2. Each part is written as `.tmp` and renamed after `fsync`. A chunk is committed only by its marker, written after all its parts. An interrupted run (SIGINT, SIGTERM, SIGHUP; exit code 130) leaves the open chunk uncommitted, and the next run deletes and redoes it.
 3. Before exporting, the per-chunk counts must add up to the collection count. Each chunk must write exactly as many rows as its range held before and after the read.
-4. The output is deterministic: rows sorted by `_id` and a sync marker derived from the part name give the same bytes for the same inputs.
+4. The output is deterministic: rows sorted by `_id`, a sync marker derived from the part name, and a header that embeds the schema exactly as declared give the same bytes for the same inputs, whichever process or worker count wrote them.
 5. Each part's SHA-256 is computed while it is written and recorded in the chunk marker and the manifest. The export does not re-read its own output; `verify-export` checks it later (below).
 
 **Verifying an export later**, for example after it was moved or before it is uploaded:
@@ -398,7 +399,7 @@ bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUM
 
 ## 9. Known limitations
 
-- **Single-threaded export.** About 6,800 rows/s on the VM, so the 41.4 M events take 1 h 41 min plus about 20 min of verification. Chunks are independent and could run in parallel, but this is not built. A crash costs at most one chunk (one day of events, up to 893,200 rows, about 2.5 min).
+- **CPU-bound export.** About 6,800 rows/s per worker on the VM. Chunks run in parallel with `--workers`; the speed-up is bounded by the VM's cores, the largest day (893,200 rows) and `mongod` sharing the CPU. A crash costs at most the chunks that were open (one day each, up to about 2.5 min of work).
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.
 - **Not yet loaded.** The full export completed with 0 contract violations, but it has not been loaded into BigQuery, and the full output has not been scanned for raw PII (only the 100K sample was).

@@ -1,6 +1,9 @@
 """Unit tests for resumable export: chunk planning, commit markers, identity, lock, deterministic parts."""
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -57,6 +60,20 @@ class DeterministicPartTests(unittest.TestCase):
             first, second = write_parts(Path(a), 10), write_parts(Path(b), 10)
             self.assertEqual([p.sha256 for p in first], [p.sha256 for p in second])
             self.assertEqual(len(first), 3)
+
+    def test_bytes_do_not_depend_on_the_process_hash_seed(self):
+        """Worker processes have their own hash seeds; the Avro header must not depend on them."""
+        script = ("import hashlib, sys, tempfile, pathlib\n"
+                  "from glamira_pipeline.export.avro_files import AvroPartWriter\n"
+                  "from glamira_pipeline.export.schema import avro_schema\n"
+                  "from glamira_pipeline.export.tables import PRODUCT_OPTION_VALUES\n"
+                  "d = pathlib.Path(tempfile.mkdtemp())\n"
+                  "w = AvroPartWriter(d, avro_schema(PRODUCT_OPTION_VALUES), sync_seed='s')\n"
+                  "w._open(); w._writer.flush(); w._stream.flush()\n"
+                  "print(hashlib.sha256((d / 'part-00000.avro.tmp').read_bytes()).hexdigest())\n")
+        digests = {subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True,
+                                  env={**os.environ, "PYTHONHASHSEED": str(seed)}).stdout for seed in (1, 2, 3, 4)}
+        self.assertEqual(len(digests), 1)
 
     def test_seed_changes_the_bytes(self):
         with TemporaryDirectory() as a, TemporaryDirectory() as b:

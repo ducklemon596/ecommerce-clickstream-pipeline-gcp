@@ -7,7 +7,8 @@ bounds the size of each part.
 
 Output is deterministic: each part's 16-byte Avro sync marker is derived from
 ``sync_seed`` and the part name instead of being random, so the same rows in
-the same order always give the same bytes and the same SHA-256.
+the same order always give the same bytes and the same SHA-256, in any process:
+the header embeds the schema exactly as given, not fastavro's parsed form.
 """
 from __future__ import annotations
 
@@ -62,7 +63,10 @@ class AvroPartWriter:
             raise ValueError("rows_per_file must be positive")
         self.directory = directory
         self.sync_seed = sync_seed
-        self.schema = parse_schema(schema)
+        parse_schema(schema)  # fail fast on an invalid schema
+        # fastavro embeds json.dumps(<schema passed to Writer>) in the header. A parsed schema's key
+        # order depends on the process's hash seed, so the original dict is passed to keep headers stable.
+        self.schema = schema
         self.rows_per_file = rows_per_file
         self.parts: list[PartFile] = []
         self._stream: BinaryIO | None = None

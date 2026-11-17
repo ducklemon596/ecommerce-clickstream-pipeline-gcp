@@ -6,6 +6,7 @@ Run with a disposable server, e.g.::
     GLAMIRA_TEST_MONGODB_URI=mongodb://127.0.0.1:27099/ uv run python -m unittest tests.integration.test_export_mongo
 """
 from datetime import datetime, timezone
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -172,6 +173,39 @@ class ExportMongoIntegrationTests(unittest.TestCase):
         self.collection.insert_one({**events(1)[0], "_id": "not-an-objectid"})
         with self.assertRaisesRegex(CoverageError, "not ObjectIds"):
             self.export()
+
+    def parallel(self, workers=3, **kwargs):
+        options = ExportOptions(rows_per_file=500, backoff_seconds=0, workers=workers)
+        return self.export(options=options, connect=partial(connect, URI), **kwargs)
+
+    def test_parallel_workers_give_the_same_output(self):
+        single = self.export(out=Path(self.tmp.name) / "single")
+        manifest = self.parallel()
+        self.assertEqual(manifest["workers"], 3)
+        self.assertEqual(manifest["content_sha256"], single["content_sha256"])
+        self.assertEqual([c["id"] for c in manifest["chunks"]], list(DAYS))
+        self.assertEqual(verify_table(self.out / "events", SCHEMA_DIR).rows, 2_400)
+
+    def test_parallel_interrupt_resumes_with_another_worker_count(self):
+        single = self.export(out=Path(self.tmp.name) / "single")
+        with self.assertRaises(ExportInterrupted):
+            self.parallel(should_stop=lambda: True)
+        self.assertFalse((self.out / "events" / MANIFEST).exists())
+        self.assertFalse(list((self.out / "events").rglob("*.tmp")))
+        resumed = self.parallel(workers=2)
+        self.assertEqual(resumed["content_sha256"], single["content_sha256"])
+
+    def test_violation_in_a_worker_stops_the_run(self):
+        bad = {**events(1)[0], "_id": ObjectId(f"{DAY0 + 86_400 + 5:08x}{'f' * 16}"), "surprise": 1}
+        self.collection.insert_one(bad)
+        with self.assertRaisesRegex(ExportError, "chunk=2020-04-02 .*unknown keys"):
+            self.parallel()
+        self.assertFalse((self.out / "events" / "chunk=2020-04-02" / SUCCESS).exists())
+        self.assertFalse((self.out / "events" / MANIFEST).exists())
+
+    def test_workers_need_a_connect_function(self):
+        with self.assertRaisesRegex(ValueError, "connect is required"):
+            self.export(options=ExportOptions(workers=2))
 
     def test_limit_exports_a_labelled_sample_by_id(self):
         manifest = self.export(options=ExportOptions(limit=100))

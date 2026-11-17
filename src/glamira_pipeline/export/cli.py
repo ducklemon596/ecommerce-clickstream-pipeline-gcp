@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import signal
@@ -58,15 +59,19 @@ def export_main() -> None:
     parser.add_argument("--database", default="countly")
     parser.add_argument("--limit", type=int, help="export only the first N documents by _id (non-random sample)")
     parser.add_argument("--rows-per-file", type=int, default=1_000_000)
+    parser.add_argument("--workers", type=int, default=1,
+                        help="processes exporting chunks in parallel (default 1); leave a core for mongod")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1 or args.rows_per_file < 1:
         parser.error("--limit and --rows-per-file must be positive")
+    if not 1 <= args.workers <= (os.cpu_count() or 1):
+        parser.error(f"--workers must be between 1 and {os.cpu_count()}")
     if not EXPORT_ID.match(args.export_id):
         parser.error("--export-id must be 1-64 letters, digits, '.', '_' or '-'")
     export_dir = args.output_dir / args.export_id
     names = list(TABLES) if "all" in args.table else list(dict.fromkeys(args.table))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    options = ExportOptions(rows_per_file=args.rows_per_file, limit=args.limit)
+    options = ExportOptions(rows_per_file=args.rows_per_file, limit=args.limit, workers=args.workers)
     stop = _StopFlag()
     results = []
     try:
@@ -76,9 +81,9 @@ def export_main() -> None:
             for name in names:
                 table = TABLES[name]
                 manifest = export_table(table, database[table.source_collection], export_dir,
-                                        hasher, options, stop)
-                results.append({k: manifest[k] for k in ("table", "rows", "bytes", "content_sha256", "seconds",
-                                                         "conversions")})
+                                        hasher, options, stop, connect=client_from_env)
+                results.append({k: manifest.get(k) for k in ("table", "rows", "bytes", "content_sha256", "workers",
+                                                         "wall_seconds", "seconds", "conversions")})
     except ExportInterrupted as exc:
         parser.exit(EXIT_INTERRUPTED, f"{exc}\n")
     except (ValueError, ExportError, StateError, PyMongoError, OSError) as exc:

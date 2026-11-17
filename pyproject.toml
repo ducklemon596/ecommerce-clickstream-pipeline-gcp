@@ -30,6 +30,7 @@ export-avro = "glamira_pipeline.export.cli:export_main"
 verify-export = "glamira_pipeline.export.cli:verify_main"
 write-raw-schemas = "glamira_pipeline.export.cli:schemas_main"
 publish-export = "glamira_pipeline.warehouse.cli:publish_main"
+load-bigquery = "glamira_pipeline.warehouse.cli:load_main"
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]

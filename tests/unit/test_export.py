@@ -16,7 +16,7 @@ from glamira_pipeline.export.avro_files import AvroPartWriter
 from glamira_pipeline.export.cli import SCHEMA_DIR
 from glamira_pipeline.export.convert import Converter, SchemaViolation, check_rules
 from glamira_pipeline.export.pii import PiiHasher, hasher_from_env
-from glamira_pipeline.export.schema import Record, avro_schema, bigquery_schema, schema_json
+from glamira_pipeline.export.schema import Field, Record, Table, avro_schema, bigquery_schema, schema_json
 from glamira_pipeline.export.tables import EVENTS, IP_LOCATIONS, PRODUCT_OPTION_VALUES, PRODUCTS, TABLES
 
 KEY = bytes(range(32))
@@ -89,6 +89,15 @@ class SchemaTests(unittest.TestCase):
                     walk(field.type.fields, f"{path}{'[]' if field.mode == 'REPEATED' else ''}.")
         for table in TABLES.values():
             walk(table.fields, "")
+
+
+    def test_bigquery_layout_is_declared_and_validated(self):
+        self.assertEqual((EVENTS.partition_by, EVENTS.cluster_by), ("time_stamp", ("collection",)))
+        fields = (Field("t", "TIMESTAMP", "NULLABLE"), Field("s", "STRING"))
+        with self.assertRaisesRegex(ValueError, "REQUIRED TIMESTAMP"):
+            Table("x", "X", "x", "", fields, partition_by="t")
+        with self.assertRaisesRegex(ValueError, "top-level scalar"):
+            Table("x", "X", "x", "", fields, cluster_by=("missing",))
 
 
 class PiiTests(unittest.TestCase):

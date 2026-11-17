@@ -55,6 +55,8 @@ EVENTS = Table(
     record_name="Event",
     source_collection="summary",
     description="One row per tracking event (27 event types) from countly.summary.",
+    partition_by="time_stamp",
+    cluster_by=("collection",),
     fields=(
         Field("_id", STRING, REQUIRED, rule="objectid_hex", description="Event ID: source ObjectId as 24 hex chars"),
         Field("collection", STRING, REQUIRED, description="Event type, e.g. view_product_detail"),

@@ -36,7 +36,7 @@ flowchart LR
 | Resume after a hard kill | 8 min 59 s |
 | Reconcile | 11 min 29 s |
 
-The [report](../../../docs/reports/full_load_benchmark.md#6-results-of-the-production-loader) has the breakdown per component.
+The [report](../../../docs/reports/full_load_benchmark.md#5-results-of-the-production-loader) has the breakdown per component.
 
 ## Prerequisites
 

@@ -73,7 +73,7 @@ Each step started with measurement on a sample, chose the simplest option that t
 
 | Question | Options weighed | Evidence | Decision |
 | --- | --- | --- | --- |
-| How to load 41M events | Upsert per document; gzip chunks + staging + `$merge`; `mongorestore`; raw `insert_many` | Measured each part on the full file: upsert 57 min, re-gzip +12 min, `mongorestore` 12 min, raw `insert_many` ×4 under 9 min. Duplicate-key errors already make a replay safe | **Raw `insert_many`** with a batch watermark and a reconciliation step; [report](docs/reports/full_load_benchmark.md) |
+| How to load 41M events | `mongorestore`; raw `insert_many` with 1, 4 or 8 threads | Measured on the full file: `mongorestore` 12 min, CPU-bound and no faster with more workers; raw `insert_many` ×4 under 9 min. Duplicate-key errors make a replay safe without upserts | **Raw `insert_many` ×4** with a batch watermark and a reconciliation step; [report](docs/reports/full_load_benchmark.md) |
 | Sample or full data? | 100K sample only; full 41M | IPs were 100% syntactically valid in the sample, and the events have product IDs but no product names | Enrich the **full** dataset; use the sample to build and test |
 | IP deduplication strategy | SQLite checkpoint; in-memory `Counter` | Scan took 33m36s with SQLite vs 7m00s with Counter (649 MiB RSS). Per-IP frequencies were identical | **Counter**: restarting a 7-minute scan is cheaper than checkpointing every batch |
 | Cursor batch size | 50K, 100K, 200K (both run orders) | Gains under 5% at the cost of more memory | **50K** |

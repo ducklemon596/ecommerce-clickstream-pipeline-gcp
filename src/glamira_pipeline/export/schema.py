@@ -75,8 +75,6 @@ class Table:
     source_collection: str
     description: str
     fields: tuple[Field, ...]
-    partition_by: str | None = None
-    cluster_by: tuple[str, ...] = ()
     redundant_id: tuple[str, ...] = ()
     sensitive_key: bool = False
 

@@ -246,8 +246,9 @@ Each conversion is counted by the exporter and recorded with the export run, so 
   - Conversions: 27,350 / 27,340 bool → string in `utm_*`, 26,066 objects → `option_filter`, 101 `order_id` int/double → string, 1,740 cart product IDs, 43 `""` → `[]`.
 - **Enrichment tables:** types and modes come from read-only full scans of `ip_locations`, `products` and `product_option_values` on 2026-11-17.
 
+- **Full-data export (2026-11-17):** all four tables, 45,614,951 rows, with **0 violations**, so no unplanned case exists in the current data ([report](../reports/full_export_avro.md)).
+
 **Still to verify**
-- **Full-data export** of all four tables. Every rule is backed by full-data profiles, but only a full pass proves there is no unplanned case.
 - **One test load into BigQuery** of a small export, to confirm TIMESTAMP, REQUIRED, empty arrays, the null STRUCT, NUMERIC and partitioning.
 
 ## Personal data

@@ -16,7 +16,7 @@ A unit test fails if the committed schema files differ from the declaration. The
 flowchart LR
     M[(MongoDB countly<br/>summary, ip_locations,<br/>products, product_option_values)] -->|read-only cursor| C[export-avro<br/>convert + HMAC]
     C --> F[part-NNNNN.avro<br/>schema files<br/>_manifest.json]
-    F -->|gcloud storage cp| G[(GCS<br/>raw/&lt;table&gt;/&lt;run&gt;/)]
+    F -->|gcloud storage rsync| G[(GCS<br/>raw/&lt;table&gt;/export_id=…/)]
     G -->|bq load AVRO| B[(BigQuery raw.*)]
 ```
 
@@ -289,19 +289,20 @@ Source: `countly.product_option_values`. Source types measured on 2026-11-17 ove
 ```bash
 export GLAMIRA_PII_HASH_KEY=...   # the project key, from a secret store
 uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17 --workers 3
+uv run verify-export /data/exports/2026-11-17
 ```
 
-**Rerunning the same command resumes the export.** Committed chunks are verified and skipped; only uncommitted work is redone. The design is in the [retry and idempotency decision record](decisions/export_retry_idempotency.md).
+Rerunning the same `export-avro` command resumes the export. Committed chunks are verified and skipped, and only uncommitted work is redone. The design, crash cases and retry policy are in the [retry and idempotency decision record](decisions/export_retry_idempotency.md).
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--table` | required | `events`, `ip_locations`, `products`, `product_option_values` or `all`; can be repeated |
+| `--table` | required | `events`, `ip_locations`, `products`, `product_option_values` or `all`; repeatable |
 | `--output-dir` | required | Export root |
-| `--export-id` | required | Name of this export; files go to `<output-dir>/<export-id>/<table>/`. The same ID with other inputs is refused |
+| `--export-id` | required | Files go to `<output-dir>/<export-id>/<table>/`. The same ID with other inputs is refused |
 | `--database` | `countly` | Source database |
-| `--limit N` | all | First N documents by `_id`, as one chunk. The manifest labels this a non-random sample |
+| `--limit N` | all | First N documents by `_id`, as one chunk; the manifest labels it a non-random sample |
 | `--rows-per-file` | 1,000,000 | Rows per Avro part |
-| `--workers` | 1 | Processes exporting chunks in parallel, each with its own MongoDB client. The output does not depend on it, and a resume may use another value. On the 4-vCPU VM, use 3 and leave a core for `mongod` |
+| `--workers` | 1 | Processes exporting chunks in parallel. The output does not depend on it. On the 4-vCPU VM, use 3 and leave a core for `mongod` |
 
 **Output per table**
 
@@ -314,54 +315,46 @@ uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
   _manifest.json                written last; its presence means "complete"
 ```
 
-`events` has one chunk per UTC day of the `_id` ObjectId time (65 chunks in the full data). The other tables are one chunk, `all`.
+`events` has one chunk per UTC day of the `_id` ObjectId time (65 in the full data); the other tables have one chunk, `all`.
 
-**What makes an export correct**
-1. Every document passes the contract, or the export stops at the first violation. The chunk gets no marker and the table no manifest.
-2. Each part is written as `.tmp` and renamed after `fsync`. A chunk is committed only by its marker, written after all its parts. An interrupted run (SIGINT, SIGTERM, SIGHUP; exit code 130) leaves the open chunk uncommitted, and the next run deletes and redoes it.
-3. Before exporting, the per-chunk counts must add up to the collection count. Each chunk must write exactly as many rows as its range held before and after the read.
-4. The output is deterministic: rows sorted by `_id`, a sync marker derived from the part name, and a header that embeds the schema exactly as declared give the same bytes for the same inputs, whichever process or worker count wrote them.
-5. Each part's SHA-256 is computed while it is written and recorded in the chunk marker and the manifest. The export does not re-read its own output; `verify-export` checks it later (below).
+**What the export guarantees**
+- **Contract.** Every row passes the contract (sections 2–5), or the export stops at the first violation and that chunk gets no marker.
+- **Counts.** The chunk counts add up to the collection count, and each chunk writes exactly as many rows as its range held before and after the read.
+- **Atomic commits.** A part becomes visible only after `fsync` and rename, and a chunk only through its marker. An interrupted chunk is redone on the next run.
+- **Determinism.** The same inputs give the same bytes, whichever process or worker count wrote them. Each part's SHA-256 is recorded in its chunk marker and in the manifest.
 
-**Verifying an export later**, for example after it was moved or before it is uploaded:
+**`_manifest.json`** records the following:
+- the export ID and selection, plus the source namespace, UUID and document count;
+- per chunk: rows, parts and the attempt that committed it;
+- per part: name, rows, bytes and SHA-256;
+- `content_sha256`, a hash of all parts that ignores timestamps;
+- the conversion counts per source path;
+- the Avro schema SHA-256 and the PII key fingerprint;
+- the git SHA, the timestamps, the read/convert/write seconds, the worker count and the wall time.
 
-```bash
-uv run verify-export /data/exports/2026-11-17          # every table; or one table directory
-uv run verify-export /data/exports/2026-11-17/events --full
-```
+**`verify-export`** checks a stored export, for example after a move or before an upload. It takes an export directory or a single table directory.
 
 | Check | Default | `--full` |
 | --- | --- | --- |
-| Inventory both ways: every listed part exists; no extra part, `.tmp` file or unknown `chunk=` directory | yes | yes |
+| Inventory both ways: every listed part exists; no extra part, `.tmp` file or unknown chunk | yes | yes |
 | Size and SHA-256 of every part, and `content_sha256` | yes | yes |
-| `avro_schema_sha256` equals the committed `schemas/raw/<table>.avsc` and the schema copy in the export | yes | yes |
-| Decode every record; writer schema and row count per part | no | yes |
+| `avro_schema_sha256` equals the committed `schemas/raw/<table>.avsc` and the copy in the export | yes | yes |
+| Decode every record; check the writer schema and row count per part | no | yes |
 
-The default never decodes rows: the SHA-256 covers every byte that was counted and checked when the part was written. On the 100K sample it takes 0.1 s against 1.6 s with `--full`. Use `--full` to test the Avro library itself, for example after upgrading fastavro. Exit code 1 means the directory differs from its manifest or from the contract.
-
-**Retries:** `AutoReconnect` (including network and server-selection timeouts) and `CursorNotFound` retry the open chunk up to 3 times, with exponential backoff and jitter. Any other error stops the run; rerun the same command after fixing the cause.
-
-**What the manifest records**
-- The export ID, the source namespace and collection UUID, and the document count.
-- The selection (full collection, or a labelled sample).
-- Per chunk: rows, number of parts and the attempt that committed it. Per part: name, rows, bytes and SHA-256.
-- `content_sha256`, a hash over all parts that ignores timestamps.
-- Conversion counts per path, the Avro schema SHA-256, and the PII key fingerprint.
-- The git SHA, timestamps, and time spent reading, converting and writing.
-
-**Measured performance** (full runs on the project VM, 2026-11-17; [report](reports/full_export_avro.md)):
-- All four tables: 45,614,951 rows, 9.30 GB, 0 violations, no retries.
-- With `--workers 3`: 52 min 46 s wall time; `events` takes 49 min at 14,054 rows/s overall. With one worker it took 1 h 41 min at 6,808 rows/s.
-- Convert takes about 50% of the work, write 38% and read 13%.
-- `verify-export` of all tables takes 53 s.
+The default never decodes, because the SHA-256 covers every byte that was checked when the part was written. Use `--full` to test the Avro library itself, for example after a fastavro upgrade.
 
 **Exit codes**
 
-| Code | Meaning |
-| --- | --- |
-| `0` | Success, or the export was already complete |
-| `1` | Configuration, contract violation, count or coverage mismatch, changed committed chunk, other inputs for the same export ID, MongoDB or file error |
-| `130` | Interrupted; rerun to resume |
+| Code | `export-avro` | `verify-export` |
+| --- | --- | --- |
+| `0` | Success, or already complete | Every table matches |
+| `1` | Configuration, contract violation, count or coverage mismatch, changed committed chunk, different identity, MongoDB or file error | First difference found |
+| `130` | Interrupted; rerun to resume | — |
+
+**Measured** on the project VM, 2026-11-17, with `--workers 3` ([report](reports/full_export_avro.md)):
+- **Volume:** 45,614,951 rows and 9.30 GB, with 0 violations and no retries.
+- **Export:** 52 min 46 s; `events` alone took 49 min, at 14,054 rows/s.
+- **Verify:** `verify-export` of all four tables took 53 s.
 
 ## 7. Loading into BigQuery
 
@@ -396,11 +389,13 @@ bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUM
    - **New NULLABLE column, or a new field inside a STRUCT:** append it in BigQuery with `bq update`. Old files stay valid.
    - **REQUIRED → NULLABLE:** allowed in place.
    - **Rename, type change, or NULLABLE → REQUIRED:** needs a new table and a full re-export.
-4. Record why in the decision record, and update this page.
+4. Export into a new `--export-id`; an existing export cannot be resumed with a changed contract or converter.
+5. Record why in the decision record, and update this page.
 
 ## 9. Known limitations
 
-- **CPU-bound export.** Three workers made `events` 2.06× faster, not 3×: each worker ran about 30% slower than a single process, on 4 shared vCPUs that `mongod` also uses. More speed needs more cores, or less Python work per row. A crash costs at most the chunks that were open (one day each, up to about 2.5 min of work).
+- **CPU-bound export.** Convert is about 50% of the work. Three workers made `events` 2.06× faster, not 3×, on 4 shared vCPUs that `mongod` also uses.
+- **Converter changes need a new export ID.** The export identity covers the schema hash, not the converter code.
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.
-- **Not yet loaded.** The full export completed with 0 contract violations, but it has not been loaded into BigQuery, and the full output has not been scanned for raw PII (only the 100K sample was).
+- **Not yet loaded.** The full export completed with 0 contract violations but has not been loaded into BigQuery. Only the 100K sample output was scanned for raw PII; the full output was not.

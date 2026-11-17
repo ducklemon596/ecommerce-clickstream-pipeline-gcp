@@ -7,7 +7,7 @@ Types and modes follow the full-data profiles (41,432,473 events on
 """
 from __future__ import annotations
 
-from glamira_pipeline.export.schema import (BOOL, INT64, NULLABLE, NUMERIC, REPEATED, REQUIRED, STRING,
+from glamira_pipeline.export.schema import (BOOL, INT64, NUMERIC, REPEATED, REQUIRED, STRING,
                                             TIMESTAMP, Field, Record, Table)
 
 # --- events (countly.summary) ---------------------------------------------------------------
@@ -55,8 +55,6 @@ EVENTS = Table(
     record_name="Event",
     source_collection="summary",
     description="One row per tracking event (27 event types) from countly.summary.",
-    partition_by="time_stamp",
-    cluster_by=("collection",),
     fields=(
         Field("_id", STRING, REQUIRED, rule="objectid_hex", description="Event ID: source ObjectId as 24 hex chars"),
         Field("collection", STRING, REQUIRED, description="Event type, e.g. view_product_detail"),

@@ -22,7 +22,7 @@ It answers to three business questions: geographic performance, product and cate
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
-| Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 53 min on the VM with 3 workers (one process: 1 h 41 min for `events` alone), plus 53 s for `verify-export`. 0 contract violations, no retries. On the 100K sample: no raw IP, email, device ID or customer ID in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
+| Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 53 min on the VM with 3 workers (2.4× faster end to end than one process), plus 53 s for `verify-export`. 0 contract violations, no retries. On the 100K sample, no raw IP, email, device ID or customer ID appeared in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
 
 Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
 
@@ -89,7 +89,7 @@ Each step started with measurement on a sample, chose the simplest option that t
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
 - [Raw events schema decision record](docs/decisions/raw_events_schema.md)
-- [Retry-safe, idempotent export decision record](docs/decisions/export_retry_idempotency.md) (export implemented; GCS upload and BigQuery load designed)
+- [Retry-safe, idempotent export decision record](docs/decisions/export_retry_idempotency.md) (export and verification implemented; GCS upload and BigQuery load designed)
 - [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
 
 ## How data correctness is ensured
@@ -220,5 +220,6 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Upload to GCS, do a small BigQuery test load, then load the raw dataset.
+  - Upload the verified export to GCS, run a small BigQuery test load, then build the idempotent loader (`load/bigquery.py`, designed in the export decision record).
+  - Scan the full export output for raw PII; only the 100K sample output has been scanned so far.
   - Use least-privilege MongoDB users for profiling and crawling.

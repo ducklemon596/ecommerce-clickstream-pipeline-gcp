@@ -61,4 +61,4 @@ The three small tables are one chunk each, so they run on one worker in both run
 - **Worker count not swept.** Only 1 and 3 workers were measured; 2 or 4 were not.
 - **No PII scan of the full output.** The check that decodes rows and looks for raw IPs, emails, device IDs and customer IDs was run on the 100K sample only.
 - **Not loaded yet.** The files have not been uploaded to GCS or loaded into BigQuery.
-- **Where the files are.** Both outputs stay on the VM data disk under `benchmark-work/export/`, about 8.7 GiB each. Only this report is in the repository.
+- **Where the files are.** Run B's output (`full-2026-11-17-w3`, 8.7 GiB) is kept on the VM data disk under `benchmark-work/export/` for the upload. Run A's output was deleted on 2026-11-17 because its old header form cannot be resumed by the current code. Only this report is in the repository.

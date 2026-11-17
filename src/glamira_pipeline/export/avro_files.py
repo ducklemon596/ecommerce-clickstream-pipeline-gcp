@@ -74,11 +74,6 @@ class AvroPartWriter:
         self._writer: Writer | None = None
         self._rows = 0
 
-    @property
-    def rows(self) -> int:
-        """Rows written so far, including the open part."""
-        return sum(p.rows for p in self.parts) + self._rows
-
     def write(self, row: dict) -> None:
         if self._writer is None:
             self._open()

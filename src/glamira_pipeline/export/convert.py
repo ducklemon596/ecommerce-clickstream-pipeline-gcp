@@ -5,7 +5,7 @@ decimal string, ``false`` → ``"false"``, 0/1 → bool, PII → HMAC). Anything
 contract does not plan for raises ``SchemaViolation``: an unknown key, a type
 outside the field's rule, a missing REQUIRED value, a non-integral ID or a
 decimal finer than the target scale. Nothing is dropped or coerced silently;
-every non-identity conversion is counted in ``ConversionStats``.
+every non-identity conversion is counted in ``Converter.stats`` ("path: conversion" -> count).
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from glamira_pipeline.export.schema import (BOOL, DECIMAL_SCALE, INT64, NUMERIC,
                                             TIMESTAMP, Field, Record, Table)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
-ConversionStats = Counter  # "path: conversion" -> count
 
 
 class SchemaViolation(ValueError):
@@ -36,7 +35,7 @@ class Converter:
     def __init__(self, table: Table, hasher: PiiHasher) -> None:
         self.table = table
         self.hasher = hasher
-        self.stats: ConversionStats = Counter()
+        self.stats: Counter[str] = Counter()
         self._sources: dict[int, frozenset[str]] = {}
 
     def convert(self, document: Mapping[str, Any]) -> dict:

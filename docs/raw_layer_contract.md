@@ -288,54 +288,64 @@ Source: `countly.product_option_values`. Source types measured on 2026-11-17 ove
 
 ```bash
 export GLAMIRA_PII_HASH_KEY=...   # the project key, from a secret store
-uv run export-avro --table all --output-dir /data/exports/2026-11-17
+uv run export-avro --table all --output-dir /data/exports --export-id 2026-11-17
 ```
+
+**Rerunning the same command resumes the export.** Committed chunks are verified and skipped; only uncommitted work is redone. The design is in the [retry and idempotency decision record](decisions/export_retry_idempotency.md).
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--table` | required | `events`, `ip_locations`, `products`, `product_option_values` or `all`; can be repeated |
-| `--output-dir` | required | Export root. Each table gets a **new** subdirectory; an existing one is refused |
+| `--output-dir` | required | Export root |
+| `--export-id` | required | Name of this export; files go to `<output-dir>/<export-id>/<table>/`. The same ID with other inputs is refused |
 | `--database` | `countly` | Source database |
-| `--limit N` | all | First N documents in natural order. The manifest labels this a non-random sample |
+| `--limit N` | all | First N documents by `_id`, as one chunk. The manifest labels this a non-random sample |
 | `--rows-per-file` | 1,000,000 | Rows per Avro part |
 | `--no-verify` | verify on | Skip re-reading the parts after writing |
 
 **Output per table**
 
 ```text
-<output-dir>/<table>/
-  part-00000.avro, part-00001.avro, ...   deflate-compressed rows
-  <table>.avsc                            Avro schema the parts were written with
-  <table>.bq.json                         BigQuery schema of the target table
-  _manifest.json                          written last; its presence means "complete"
+<output-dir>/<export-id>/<table>/
+  _export.json                  identity: source UUID, chunk plan and counts, schema SHA, key fingerprint, versions
+  <table>.avsc, <table>.bq.json Avro schema the parts were written with; BigQuery schema of the target table
+  chunk=<id>/part-00000.avro    deflate-compressed rows of one chunk, sorted by _id
+  chunk=<id>/_SUCCESS.json      chunk commit marker: rows, first and last _id, SHA-256 of each part
+  _manifest.json                written last; its presence means "complete"
 ```
 
+`events` has one chunk per UTC day of the `_id` ObjectId time (65 chunks in the full data). The other tables are one chunk, `all`.
+
 **What makes an export correct**
-1. Every document passes the contract, or the export stops at the first violation and writes no manifest.
-2. Each part is written as `.tmp` and renamed after `fsync`, so a visible part is always complete. An interrupted run (SIGINT, SIGTERM, SIGHUP; exit code 130) discards the open part.
-3. A full export writes exactly as many rows as the collection held before and after the scan.
-4. After writing, every part is re-read: SHA-256 and row count must match the manifest.
+1. Every document passes the contract, or the export stops at the first violation. The chunk gets no marker and the table no manifest.
+2. Each part is written as `.tmp` and renamed after `fsync`. A chunk is committed only by its marker, written after all its parts. An interrupted run (SIGINT, SIGTERM, SIGHUP; exit code 130) leaves the open chunk uncommitted, and the next run deletes and redoes it.
+3. Before exporting, the per-chunk counts must add up to the collection count. Each chunk must write exactly as many rows as its range held before and after the read.
+4. The output is deterministic: rows sorted by `_id` and a sync marker derived from the part name give the same bytes for the same inputs.
+5. After writing, every part is re-read: SHA-256 and row count must match the manifest.
+
+**Retries:** `AutoReconnect` (including network and server-selection timeouts) and `CursorNotFound` retry the open chunk up to 3 times, with exponential backoff and jitter. Any other error stops the run; rerun the same command after fixing the cause.
 
 **What the manifest records**
-- The source: namespace, collection UUID, and document counts before and after the scan.
+- The export ID, the source namespace and collection UUID, and the document count.
 - The selection (full collection, or a labelled sample).
-- Per part: name, rows, bytes and SHA-256.
+- Per chunk: rows, number of parts and the attempt that committed it. Per part: name, rows, bytes and SHA-256.
+- `content_sha256`, a hash over all parts that ignores timestamps.
 - Conversion counts per path, the Avro schema SHA-256, and the PII key fingerprint.
 - The git SHA, timestamps, and time spent reading, converting and writing.
 
-**Measured performance:** 100,000 sample events in 6.3 s (read 0.5, convert 3.1, write 2.6), so about 16,000 rows/s on one core. 22.4 MB of Avro, which extrapolates to about 9 GB and roughly 45 minutes for the 41.4 M events. This is an extrapolation; the full run has not been measured yet.
+**Measured performance:** 100,000 sample events in 6.5 s of work (read 0.5, convert 3.3, write 2.7), so about 15,000 rows/s on one core. 22.4 MB of Avro, which extrapolates to about 9 GB and roughly 45–55 minutes for the 41.4 M events. This is an extrapolation; the full run has not been measured yet.
 
 **Exit codes**
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success |
-| `1` | Configuration, contract violation, count mismatch, MongoDB or file error |
-| `130` | Interrupted |
+| `0` | Success, or the export was already complete |
+| `1` | Configuration, contract violation, count or coverage mismatch, changed committed chunk, other inputs for the same export ID, MongoDB or file error |
+| `130` | Interrupted; rerun to resume |
 
 ## 7. Loading into BigQuery
 
-Create each table from its committed schema, then load the parts. Shown for `events`; the other tables omit partitioning and clustering.
+Create each table from its committed schema, upload the export, then load the parts listed in the manifest. Shown for `events`; the other tables omit partitioning and clustering.
 
 ```bash
 bq mk --table \
@@ -344,15 +354,18 @@ bq mk --table \
   --clustering_fields=collection \
   <project>:raw.events
 
-gcloud storage cp -r /data/exports/2026-11-17/events gs://<bucket>/raw/events/2026-11-17/
+gcloud storage rsync --recursive --checksums-only \
+  /data/exports/2026-11-17/events gs://<bucket>/raw/events/export_id=2026-11-17/
 
 bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUMERIC \
-  <project>:raw.events 'gs://<bucket>/raw/events/2026-11-17/part-*.avro'
+  <project>:raw.events "$(jq -r '[.files[].name | "gs://<bucket>/raw/events/export_id=2026-11-17/" + .] | join(",")' \
+  /data/exports/2026-11-17/events/_manifest.json)"
 ```
 
 - `--use_avro_logical_types` is mandatory. Without it, BigQuery reads `timestamp-micros` as INTEGER, which does not match the TIMESTAMP columns.
-- The `part-*.avro` wildcard keeps the manifest and schema files out of the load.
-- **Reloading the same export:** truncate the table (or use `--replace`) first. Loading the same files twice duplicates rows, because BigQuery has no key constraint.
+- Upload only after `_manifest.json` exists. Because the parts are byte-identical across reruns, `rsync --checksums-only` uploads nothing that is already there.
+- Loading the listed parts, not a wildcard, keeps manifests, markers and stray objects out of the load.
+- **Reloading the same export:** loading the same files twice with the default append duplicates rows. The planned loader uses a deterministic job ID and `WRITE_TRUNCATE_DATA` instead ([decision record](decisions/export_retry_idempotency.md), section 7); it is not built yet.
 - **Not yet verified:** one test load of a small export. It should confirm the REQUIRED/NULLABLE handling, empty arrays, the NULL STRUCT and NUMERIC in BigQuery.
 
 ## 8. Changing the contract
@@ -367,7 +380,7 @@ bq load --source_format=AVRO --use_avro_logical_types --decimal_target_types=NUM
 
 ## 9. Known limitations
 
-- **Single-threaded export.** About 16,000 rows/s, so the 41.4 M events take on the order of 45 minutes. Each table is one cursor in natural order; a failed run restarts from the beginning, into a new directory.
+- **Single-threaded export.** About 15,000 rows/s, so the 41.4 M events take on the order of 45–55 minutes. Chunks are independent and could run in parallel, but this is not built. A crash costs at most one chunk (one day of events, up to 893,200 rows).
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.
 - **Full validation pending.** The contract has been checked against full-data type profiles, but a full export has not yet been run end to end.

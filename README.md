@@ -22,7 +22,7 @@ It answers to three business questions: geographic performance, product and cate
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
-| Avro export (100K sample) | 0 contract violations; 100,000 rows in 22.4 MB, re-read with matching checksums; no raw IP, email, device ID or customer ID in the files. The full export is not run yet |
+| Avro export (100K sample) | 0 contract violations; 100,000 rows in 22.4 MB, re-read with matching checksums; no raw IP, email, device ID or customer ID in the files. Interrupted at 60,000 rows and resumed: same content hash as an uninterrupted run. The full export is not run yet |
 
 Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample export ran on a local MongoDB. The reports linked below hold the full numbers.
 
@@ -62,7 +62,7 @@ flowchart LR
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
 | 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
-| 5 | Export the raw layer | `uv run export-avro --table all --output-dir …` | Full, read only (`--limit N` for a labelled sample) | Avro parts, schemas and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md) |
+| 5 | Export the raw layer | `uv run export-avro --table all --output-dir … --export-id …` | Full, read only, in day chunks; rerun to resume (`--limit N` for a labelled sample) | Avro parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -88,7 +88,7 @@ Each step started with measurement on a sample, chose the simplest option that t
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
 - [Raw events schema decision record](docs/decisions/raw_events_schema.md)
-- [Retry-safe export proposal](docs/decisions/export_retry_idempotency.md) (proposed, not implemented)
+- [Retry-safe, idempotent export decision record](docs/decisions/export_retry_idempotency.md) (export implemented; GCS upload and BigQuery load designed)
 - [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
 
 ## How data correctness is ensured
@@ -107,6 +107,7 @@ Details and caveats:
   - Counts are checked after every full run: 19,557 product documents = 19,557 input IDs; option rows reconcile with `option_count`; IP frequencies reconcile with the 41,432,473 scanned events.
   - IP output is verified in a staging collection before publication.
 - **A typed raw contract.** The export refuses unknown keys, unplanned types and missing REQUIRED values, counts every conversion, and verifies each Avro part after writing. One declaration generates the Avro schema, the BigQuery schema and the converter.
+- **Resumable, deterministic export.** Events are exported in one chunk per day of `_id`, each committed by a marker written after its parts. A rerun verifies and skips committed chunks and redoes only the open one; the same inputs give byte-identical files.
 - **Provenance.** Each run is recorded in `enrichment_runs`:
   - its parameters;
   - an input SHA-256 (or the BIN SHA-256);
@@ -169,7 +170,7 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
   --delay 0.2 --jitter 0.1 --concurrency 6 --block-retries 3   # ~80 min; rerun to resume
 
 export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
-uv run export-avro --table all --output-dir /data/glamira/exports/$(date +%Y%m%d)   # read only; new directory
+uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17   # read only; rerun to resume
 ```
 
 | Concern | How it is handled |
@@ -177,7 +178,7 @@ uv run export-avro --table all --output-dir /data/glamira/exports/$(date +%Y%m%d
 | Defaults | `--database countly` and `--source summary` are the defaults; sample runs name their database explicitly |
 | Resources | The IP scan holds unique IPs in memory (about 750 MiB measured); the other stages stream with bounded memory. Write artifacts to the data disk, not the boot disk |
 | Disconnects | Run inside `tmux`. The crawl also treats `SIGHUP` like Ctrl+C: it finishes in-flight requests, flushes and records the run as `stopped` |
-| Failures | Every command exits nonzero with the failed check in the message. IP enrichment keeps staging and artifacts; the crawl resumes by rerunning the same command |
+| Failures | Every command exits nonzero with the failed check in the message. IP enrichment keeps staging and artifacts; the crawl and the export resume by rerunning the same command |
 | Logs | Commands log stage progress to stderr; redirect with `2>&1 | tee run.log` to keep a copy. Logs never contain the URI or raw IPs |
 | Crawl egress | Requests leave from the VM's IP. Akamai may treat a cloud IP differently from the workstation IP that was measured, so start with `--limit 200` and keep the backoff enabled |
 | Cost | Stop the VM when no stage runs; persistent disks are still billed |

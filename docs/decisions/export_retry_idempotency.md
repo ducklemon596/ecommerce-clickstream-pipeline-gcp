@@ -1,10 +1,10 @@
 # Decision record: retry-safe, idempotent export to GCS and BigQuery
 
-**Status:** proposed, 2026-11-17. Not implemented. **Scope:** `export-avro`, the upload to GCS and the BigQuery load of the four raw tables described in the [raw layer contract](../raw_layer_contract.md).
+**Status:** accepted, 2026-11-17. Sections 1–5 (the export) are implemented in `export-avro`; sections 6–7 (upload and BigQuery load) are designed but not yet built. **Scope:** `export-avro`, the upload to GCS and the BigQuery load of the four raw tables described in the [raw layer contract](../raw_layer_contract.md).
 
 ## Context
 
-The current exporter is **fail-safe but not resumable**:
+Before this change the exporter was **fail-safe but not resumable**:
 
 - **Fail-safe:** parts are renamed only after `fsync`, the manifest is written last, a table directory is never reused, and every part is re-read after writing. A broken run can never pass for a complete one.
 - **Not resumable:**
@@ -69,13 +69,15 @@ flowchart LR
 
 ### 1. Export identity
 
-A run is identified by `--export-id` (for example `2026-11-17`) and writes into `<output>/<export-id>/<table>/`. The first run writes `_export.json` containing:
+A run is identified by `--export-id` (for example `2026-11-17`) and writes into `<output>/<export-id>/<table>/`. The first run writes `_export.json`. Its `identity` part is compared on every rerun:
 - the table, the source namespace and collection UUID, and the document count;
 - the Avro schema SHA-256 and the PII key fingerprint;
 - the chunk plan, `rows_per_file`, the codec;
-- the versions of fastavro and zlib, and the git SHA.
+- the versions of fastavro and zlib.
 
-**Rerunning the same command resumes the run.** The identity must match, otherwise the run is refused with a clear message. Different inputs cannot silently mix in one directory.
+Its `recorded` part (start time, git SHA, server address) is kept but not compared, so a resume through another tunnel port still works.
+
+**Rerunning the same command resumes the run.** The identity must match, otherwise the run is refused with a message naming the differing inputs. Different inputs cannot silently mix in one directory. A non-blocking `flock` on the table directory refuses a second process writing the same export at the same time.
 
 ### 2. Deterministic chunks
 
@@ -100,14 +102,25 @@ For each chunk, in order:
 4. Check that the rows written equal the count taken before the read, and the count after.
 5. Write `_SUCCESS.json` atomically. It holds rows, the first and last `_id`, and each part's name, rows and SHA-256. **This file is the commit point.**
 
-When every chunk is committed, `_manifest.json` is written. It holds the sum of chunk rows, which must equal the source count, plus the conversion counts and timings. As today, its presence means "complete".
+When every chunk is committed, `_manifest.json` is written. It holds the sum of chunk rows, which must equal the planned count, plus the conversion counts and timings, and `content_sha256`: the SHA-256 over the sorted part names and part hashes. Unlike the manifest file itself, it contains no timestamps, so two exports with the same bytes share it. As before, the manifest's presence means "complete"; rerunning a complete export does nothing.
+
+**Crash windows.** Retry decisions read only the files above, never the logs: a log line can be missing or duplicated without effect.
+
+| Crash point | State left | Next run |
+| --- | --- | --- |
+| While writing a part | `part-N.avro.tmp` | No marker: the chunk's files are deleted and the chunk is redone |
+| After some parts, before the marker | Complete parts, no marker | Same: deleted and redone, giving the same bytes |
+| While writing the marker | `_SUCCESS.json.tmp` | Ignored; deleted and redone |
+| After the marker rename, before the directory `fsync` (power loss) | Marker present or absent | Absent: redone. Present: valid, because the parts were fsynced before it |
+| After the marker, before the log line | Log incomplete | No effect |
+| Before `_manifest.json` | All markers, no manifest | Chunks verified and skipped; the manifest is written |
 
 ### 4. Byte-identical output
 
 Within a chunk the rows are sorted by `_id`, and each part's sync marker is `SHA-256("<table>/<chunk>/<part>")[:16]`. The same source, contract, key and library versions therefore always give the same bytes, which was verified locally. This gives three things:
 - a re-exported chunk can be compared to a committed one by hash alone;
 - the GCS sync uploads nothing when nothing changed;
-- the manifest SHA-256 becomes a content identity, used in the BigQuery job ID.
+- `content_sha256` is a content identity, used in the BigQuery job ID.
 
 ### 5. Retry policy
 
@@ -133,13 +146,13 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 
 ### 7. Idempotent BigQuery load
 
-- **Deterministic job ID:** `load_<table>_<export-id>_<first 12 hex of the manifest SHA-256>`.
+- **Deterministic job ID:** `load_<table>_<export-id>_<first 12 hex of content_sha256>`.
   - Resubmitting after a timeout cannot start a second load. BigQuery answers `409 duplicate`, and the loader then reads the job's state with `jobs.get`.
   - If that job failed, the loader retries with a suffix `_r<n>`, but only after confirming every earlier attempt failed. This is the exactly-once pattern described in the BigQuery reliability docs.
 - **`WRITE_TRUNCATE_DATA` into the existing table:**
   - It replaces all rows atomically when the job succeeds, so loading the same export twice gives the same table, never duplicates.
   - It keeps the table created from `schemas/raw/<table>.bq.json`, with its partitioning, clustering, REQUIRED modes and descriptions. `WRITE_TRUNCATE` would instead take the schema from the Avro files.
-- **Source URI:** `gs://…/export_id=<id>/chunk=*/part-*.avro`. The wildcard excludes manifests and schema files.
+- **Source URIs:** the explicit list of parts from the manifest (65 for `events`), not a wildcard. Leftover or foreign objects under the prefix can never be loaded.
 - **After the load:** check that `COUNT(*)` equals the manifest rows. For `events`, also compare the per-day counts with the chunk counts, allowing for the 166 boundary documents.
 - **Not proposed: one load per partition** (`raw.events$YYYYMMDD` with truncate). It would be idempotent per day, but chunks follow the `_id` day, and 166 rows have a different `time_stamp` day, so BigQuery would reject them from that partition.
 
@@ -161,21 +174,36 @@ gcloud storage rsync --recursive --checksums-only --delete-unmatched-destination
 - **Uneven chunks.** The largest event chunk (893,200 rows) bounds the work lost to a crash.
 - **Parallel export is possible but not proposed now.** Chunks are independent, so they could run in parallel processes, since conversion is CPU-bound. Add it only if the measured full run is too slow.
 
-## Implementation outline (when accepted)
+## Implementation
 
-| Module | Change |
+| Module | Responsibility |
 | --- | --- |
-| `export/chunks.py` (new) | Plan `_id` chunks per table, check coverage. Pure, with injected counts |
-| `export/state.py` (new) | `_export.json` identity, `_SUCCESS.json` markers, verify and skip, cleanup of uncommitted files |
-| `export/avro_files.py` | Deterministic `sync_marker` per part |
-| `export/exporter.py` | Chunk loop with bounded retries on transient errors; manifest from markers |
-| `export/cli.py` | `--export-id`; rerun = resume |
-| `load/bigquery.py` (later, new dependency `google-cloud-bigquery`) | Deterministic job ID, `WRITE_TRUNCATE_DATA`, `409` handling, count check |
+| [`export/chunks.py`](../../src/glamira_pipeline/export/chunks.py) | Day chunks of `_id`, per-chunk counts, coverage check |
+| [`export/state.py`](../../src/glamira_pipeline/export/state.py) | `_export.json` identity, `_SUCCESS.json` markers, verify and skip, reset of uncommitted chunks, `flock` |
+| [`export/avro_files.py`](../../src/glamira_pipeline/export/avro_files.py) | Sync marker derived from `<table>/<chunk>/<part>` |
+| [`export/exporter.py`](../../src/glamira_pipeline/export/exporter.py) | Chunk loop, retries on `AutoReconnect` and `CursorNotFound`, manifest with `content_sha256` |
+| [`export/cli.py`](../../src/glamira_pipeline/export/cli.py) | `--export-id`; rerunning the same command resumes |
+| `load/bigquery.py` | **Not built yet** (needs `google-cloud-bigquery` and a dataset): deterministic job ID, `WRITE_TRUNCATE_DATA`, `409` handling, count check |
 
 **Tests**
-- Unit: chunk planning and coverage, marker verification, retry classification, byte-identical parts.
-- Integration (local MongoDB):
-  - a crash after N chunks, then a resume that redoes only the open chunk;
-  - an injected `AutoReconnect` that is retried;
-  - a modified committed part that is detected;
-  - two full runs that give identical hashes.
+- Unit ([test_export_state.py](../../tests/unit/test_export_state.py)): contiguous day chunks, coverage, identical bytes for identical rows, marker verification (changed, missing or extra part), reset that refuses committed chunks and foreign files, identity mismatch, lock.
+- Integration ([test_export_mongo.py](../../tests/integration/test_export_mongo.py), local MongoDB 8.0, three days of synthetic events):
+  - an interrupt after the first day commits that day only; the resume keeps its marker, redoes the open day, and gives the same `content_sha256` as an uninterrupted run;
+  - two injected `AutoReconnect` errors are retried (the chunk commits on attempt 3), a third fails the run;
+  - a modified committed part stops the resume;
+  - a different `rows_per_file` or PII key cannot reuse the export ID;
+  - a collection inserted in reverse order gives the same `content_sha256`;
+  - an `_id` that is not an ObjectId fails the coverage check.
+
+**Measured on the 100K sample** (2026-11-17, local MongoDB 8.0, one chunk because the sample covers one day, `--rows-per-file 30000`):
+
+| Run | Result |
+| --- | --- |
+| Uninterrupted | 100,000 rows in 4 parts; 6.5 s of work (read 0.5, convert 3.3, write 2.7), 15,291 rows/s, against about 16,000 rows/s before the `_id` sort |
+| `SIGTERM` after 60,000 rows | Exit code 130; 2 complete parts left, no marker |
+| Same command again | Removed the 2 uncommitted parts, redid the chunk, verified; `content_sha256` equal to the uninterrupted run |
+| Same command a third time | "already complete", nothing written |
+
+The cost of `_id` ranges on the full collection (section "Evidence") is still to be measured by the full run.
+
+**Known gap:** the identity compares the Avro schema hash, not the converter code. Changing a conversion rule without changing the schema and then resuming an export would mix old and new chunks. Start a new export ID after any change to `export/`.

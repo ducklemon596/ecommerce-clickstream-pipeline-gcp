@@ -365,7 +365,7 @@ uv run publish-export /data/exports/2026-11-17 --bucket <bucket> --dataset glami
 - `publish-export` verifies the export, uploads it to `gs://<bucket>/raw/<table>/export_id=<export-id>/`, and writes `_load.json` last.
 - The `bigquery-loader` Cloud Function then loads each table into `glamira_raw.<table>`. It creates the table from the contract on first use, with day partitioning on `events.time_stamp` and clustering by `collection`.
 - The load uses a deterministic job ID and `WRITE_TRUNCATE_DATA`, then checks the row count. Repeating any step changes nothing.
-- The setup, IAM and checks are in the [runbook](runbooks/bigquery_load.md); how the load works is in the [warehouse guide](../src/glamira_pipeline/warehouse/README.md).
+- The cloud setup is in the [GCP setup guide](runbooks/gcp_setup.md), and running and checking a load in the [load runbook](runbooks/bigquery_load.md); how the load works is in the [warehouse guide](../src/glamira_pipeline/warehouse/README.md).
 
 **Load options fixed by this contract:**
 - `use_avro_logical_types`: otherwise `timestamp-micros` arrives as INTEGER, not TIMESTAMP.

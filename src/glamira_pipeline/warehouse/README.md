@@ -4,7 +4,7 @@ This package moves a verified raw export into BigQuery in two steps:
 1. `publish-export` uploads the export to GCS.
 2. A Cloud Function, `bigquery-loader`, sees the upload complete and loads each table.
 
-Both steps are safe to repeat: a retry never duplicates rows or overwrites objects. The step-by-step first run is in the [runbook](../../../docs/runbooks/bigquery_load.md), and the design is §7 of the [export decision record](../../../docs/decisions/export_retry_idempotency.md).
+Both steps are safe to repeat: a retry never duplicates rows or overwrites objects. Cloud setup is in the [GCP setup guide](../../../docs/runbooks/gcp_setup.md), running a load in the [load runbook](../../../docs/runbooks/bigquery_load.md), and the design is §7 of the [export decision record](../../../docs/decisions/export_retry_idempotency.md).
 
 ```mermaid
 flowchart LR
@@ -71,7 +71,7 @@ Logs are JSON lines with `severity`. Read them with `gcloud functions logs read 
 
 ## Deploying the function
 
-Run [`scripts/deploy_bigquery_loader.sh`](../../../scripts/deploy_bigquery_loader.sh) with `PROJECT`, `BUCKET` and `SERVICE_ACCOUNT` set; `--dry-run` prints the command. The script stages only the modules the function imports:
+[`scripts/deploy_bigquery_loader.sh`](../../../scripts/deploy_bigquery_loader.sh) either builds the source ZIP for a Console deploy (`--zip <file>`) or deploys with gcloud (`PROJECT`, `BUCKET`, `SERVICE_ACCOUNT` set; `--dry-run` prints the command). The script stages only the modules the function imports:
 - `spec.py`, `bigquery.py`, `runner.py`, `function.py`;
 - [`functions/bigquery_loader/main.py`](../../../functions/bigquery_loader/main.py) and its pinned `requirements.txt`.
 
@@ -85,9 +85,10 @@ A unit test keeps those modules free of the export package.
 | `roles/bigquery.dataEditor` | Each allowed dataset | Create tables, replace their data |
 | `roles/storage.objectViewer` | Export bucket | Read specs, list parts |
 | `roles/storage.objectCreator` | Export bucket | Write `_LOADED.json`; no overwrite or delete |
-| `roles/eventarc.eventReceiver`, `roles/run.invoker` | Project, function | Receive the trigger |
+| `roles/eventarc.eventReceiver` | Project | Receive events from the trigger |
+| `roles/run.invoker` | The `bigquery-loader` service only | Let the trigger call the function; without it every delivery is refused |
 
-The Cloud Storage service agent also needs `roles/pubsub.publisher` so that bucket events reach Eventarc.
+The Cloud Storage service agent also needs `roles/pubsub.publisher` so that bucket events reach Eventarc. Keep **one** trigger on the bucket: each extra trigger delivers every event again (harmless, but it doubles invocations).
 
 ## Modules
 

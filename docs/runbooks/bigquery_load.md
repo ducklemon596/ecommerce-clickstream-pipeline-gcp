@@ -1,162 +1,81 @@
-# Runbook: first load of the raw layer into BigQuery
+# Runbook: load an export into BigQuery
 
-This runbook does the first load in four parts:
-- **Setup:** create the GCS bucket, the BigQuery datasets and a least-privilege service account, then deploy the `bigquery-loader` Cloud Function.
-- **Test:** load the 100K sample into `glamira_raw_sample`.
-- **Full load:** load the full export into `glamira_raw`.
-- **Repeats:** check that repeating any step changes nothing.
+This runbook takes a verified export through to `glamira_raw.<table>` and checks the result. It assumes the one-time [GCP setup](gcp_setup.md) is done. How each step works is in the [warehouse guide](../../src/glamira_pipeline/warehouse/README.md).
 
-How the pieces work is in the [warehouse guide](../../src/glamira_pipeline/warehouse/README.md).
+A load has three steps:
+1. **Publish.** Run `publish-export` where the export lives.
+2. **Load.** The `bigquery-loader` function sees each table's `_load.json` and loads that table. Nothing needs to be run by hand.
+3. **Verify.** Check the `_LOADED.json` markers and run the queries in `sql/checks/`.
 
-Run each block yourself and keep the output. The first run's results are in the [load report](../reports/bigquery_load.md). Steps 1–3 are done once per project.
-
-## 0. Variables
+Every step can be repeated safely. Publishing again uploads only objects that are missing. A repeated event, or a rerun of `load-bigquery`, reuses the same BigQuery job, so it never loads twice.
 
 ```bash
-export PROJECT=<project-id>
 export REGION=asia-southeast1
 export BUCKET=glamira-raw-datalake-asia-southeast1
-export SA=bq-loader@$PROJECT.iam.gserviceaccount.com
-gcloud config set project $PROJECT
 ```
 
-## 1. APIs, bucket and datasets
+## 1. Test load with the 100K sample (workstation)
+
+`data/exports/sample-100k` is an `events` export of the 100K sample that has already passed `verify-export`.
 
 ```bash
-gcloud services enable cloudfunctions.googleapis.com run.googleapis.com eventarc.googleapis.com \
-  cloudbuild.googleapis.com artifactregistry.googleapis.com pubsub.googleapis.com
-
-gcloud storage buckets create gs://$BUCKET --location $REGION --default-storage-class STANDARD \
-  --uniform-bucket-level-access --public-access-prevention
-
-bq mk --location $REGION --dataset --description "Raw layer, loaded from verified Avro exports" $PROJECT:glamira_raw
-bq mk --location $REGION --dataset --description "Raw layer test loads (100K sample)" $PROJECT:glamira_raw_sample
-```
-
-**Why these settings.** The bucket and the datasets must be in the same region, because a load job cannot read a bucket in another location. Uniform access and public-access prevention keep the raw data private.
-
-## 2. Service account for the loader
-
-```bash
-gcloud iam service-accounts create bq-loader --display-name "BigQuery raw loader (Cloud Function)"
-
-gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/bigquery.jobUser
-gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/eventarc.eventReceiver
-for dataset in glamira_raw glamira_raw_sample; do
-  bq add-iam-policy-binding --member serviceAccount:$SA --role roles/bigquery.dataEditor $PROJECT:$dataset
-done
-for role in roles/storage.objectViewer roles/storage.objectCreator; do
-  gcloud storage buckets add-iam-policy-binding gs://$BUCKET --member serviceAccount:$SA --role $role
-done
-
-# Bucket events reach Eventarc through Pub/Sub, published by the Cloud Storage service agent.
-GCS_AGENT=$(gcloud storage service-agent --project $PROJECT)
-gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$GCS_AGENT --role roles/pubsub.publisher
-```
-
-The loader can read objects and create new ones (`_LOADED.json`), but it cannot overwrite or delete objects, and it can write only the two datasets.
-
-## 3. Deploy the function
-
-```bash
-PROJECT=$PROJECT BUCKET=$BUCKET SERVICE_ACCOUNT=$SA ALLOWED_DATASETS=glamira_raw,glamira_raw_sample \
-  scripts/deploy_bigquery_loader.sh --dry-run          # check the command and the staged files
-PROJECT=$PROJECT BUCKET=$BUCKET SERVICE_ACCOUNT=$SA ALLOWED_DATASETS=glamira_raw,glamira_raw_sample \
-  scripts/deploy_bigquery_loader.sh
-gcloud functions add-invoker-policy-binding bigquery-loader --region $REGION --member serviceAccount:$SA
-```
-
-If the deploy reports that the trigger's service agents are not ready, wait a few minutes and run it again. Eventarc sets up its agents on first use in a project.
-
-## 4. Test load: the 100K sample
-
-On the workstation, the sample export is `data/exports/sample-100k`. It holds `events` only, 100,000 rows from 2020-06-04, and already passed `verify-export`.
-
-```bash
-gcloud auth application-default login                       # once; credentials for publish-export and load-bigquery
 uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset glamira_raw_sample
-
-gcloud functions logs read bigquery-loader --region $REGION --limit 20
-gcloud storage cat gs://$BUCKET/raw_sample/events/export_id=sample-100k/_LOADED.json
-
+gcloud storage cat gs://$BUCKET/raw_sample/events/export_id=sample-100k/_LOADED.json   # appears within a minute
 for check in 01_tables 02_layout 03_events_by_day 04_events_shapes; do
-  sed 's/{{dataset}}/glamira_raw_sample/g' sql/checks/$check.sql | bq query --use_legacy_sql=false --format=prettyjson
+  sed 's/{{dataset}}/glamira_raw_sample/g' sql/checks/$check.sql | bq query --use_legacy_sql=false
 done
 ```
 
-**Expected result:**
-- `_LOADED.json` reports 100,000 rows.
-- `02_layout`: `events` is partitioned by `time_stamp`, clustered by `collection`, and its REQUIRED columns are still REQUIRED.
-- `03_events_by_day`: a single day, with 100,000 rows.
-- `04_events_shapes`: listing events have `option_filter` set and an empty `option`. The NUMERIC columns live in `products`, so they are checked in step 5.
+**Expected:** `_LOADED.json` shows 100,000 rows; `events` is partitioned by `time_stamp` and clustered by `collection`; and every count in `04` equals the conversion counts in the sample's `_manifest.json`.
 
-## 5. Full load
-
-**1. Let the VM write to GCS.** Do this while the VM is stopped. It keeps every current scope and turns storage read-only into read-write. Pass full scope URLs: gcloud rejects the short `devstorage.read_write` form.
+## 2. Full load (on the VM)
 
 ```bash
-gcloud compute instances set-service-account glamira-mongodb --zone ${REGION}-b \
-  --service-account $(gcloud compute instances describe glamira-mongodb --zone ${REGION}-b \
-      --format 'value(serviceAccounts[0].email)') \
-  --scopes $(printf 'https://www.googleapis.com/auth/%s,' devstorage.read_write logging.write monitoring.write \
-      service.management.readonly servicecontrol trace.append | sed 's/,$//')
 gcloud compute instances start glamira-mongodb --zone ${REGION}-b
+gcloud compute ssh glamira-mongodb --zone ${REGION}-b
 ```
 
-**2. Publish from the VM.** Get this branch onto the VM's checkout, either from a git bundle or by pulling it once it is pushed. Then run:
+On the VM, check out the commit to run, then:
 
 ```bash
 uv sync --frozen
-uv run publish-export /data/mongodb/benchmark-work/export/full-2026-11-17-w3 --bucket glamira-raw-datalake-asia-southeast1 --dataset glamira_raw \
+uv run publish-export <export dir> --bucket glamira-raw-datalake-asia-southeast1 --dataset glamira_raw --workers 8 \
   2>&1 | tee publish_full.log
 ```
 
-**3. Stop the VM** as soon as the publish has finished. The load runs in BigQuery and does not need the VM.
+Then stop the VM. The load runs in BigQuery and does not need it:
 
 ```bash
 gcloud compute instances stop glamira-mongodb --zone ${REGION}-b
 ```
 
-**4. Follow the load, then check the result.**
+**Resource use measured on the full export:** about 71 s of wall time, of which the SHA-256 verification is about 51 s. Peak memory was 1.5 GB with `--workers 8`; resumable uploads buffer about 100 MiB per worker.
+
+## 3. Verify
 
 ```bash
-gcloud functions logs read bigquery-loader --region $REGION --limit 50
-gcloud storage ls "gs://$BUCKET/raw/*/export_id=full-2026-11-17-w3/_LOADED.json"
+gcloud storage ls "gs://$BUCKET/raw/*/export_id=<export-id>/_LOADED.json"     # one per table
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="bigquery-loader" AND severity>=WARNING' --limit 20
 for check in 01_tables 02_layout 03_events_by_day 04_events_shapes 05_numeric 06_join_coverage; do
-  sed 's/{{dataset}}/glamira_raw/g' sql/checks/$check.sql | bq query --use_legacy_sql=false --format=prettyjson
+  sed 's/{{dataset}}/glamira_raw/g' sql/checks/$check.sql | bq query --use_legacy_sql=false
 done
 ```
 
-**Expected result:**
-- There are four `_LOADED.json` objects.
-- The row counts are: events 41,432,473; ip_locations 3,239,627; products 19,557; product_option_values 923,294.
-- In `03_events_by_day`, each day matches its chunk in the events `_manifest.json`, and 166 rows in total have a `time_stamp` on another day.
-
-## 6. Repeat everything, expect no change
-
-```bash
-# Upload again: every object is skipped (uploaded 0).
-uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset glamira_raw_sample
-
-# Load again past the marker: the job ID already exists (409), so the same job is reused and the count is unchanged.
-uv run load-bigquery gs://$BUCKET/raw_sample/events/export_id=sample-100k/_load.json --ignore-marker
-sed 's/{{dataset}}/glamira_raw_sample/g' sql/checks/01_tables.sql | bq query --use_legacy_sql=false
-```
-
-## 7. What to send back
-
-1. The JSON printed by each `publish-export` run: uploaded and skipped counts, bytes, seconds.
-2. The function log lines for each table (`loaded …`), and every `_LOADED.json`. They hold the job ID, the rows and the seconds.
-3. The output of every check query.
-4. Anything that failed, with its log line.
-
-## Cost
-
-| Item | Estimate |
+| Query | Expected |
 | --- | --- |
-| GCS | About 9.3 GB Standard: roughly $0.2 per month |
-| BigQuery storage | About 30–40 GB logical: roughly $0.8 per month |
-| Load jobs | Free |
-| Check queries | A few GB, inside the free 1 TB per month |
-| Function, Cloud Build, Artifact Registry | Within the free tiers; the image is about 0.2 GB |
-| VM | Running only for the publish, about 10 minutes |
+| `01_tables` | Each `row_count` equals the table's manifest rows |
+| `02_layout` | Partitioning and clustering as declared; REQUIRED columns still REQUIRED |
+| `03_events_by_day` | Each `_id` day equals its chunk in the events manifest |
+| `04_events_shapes` | Equals the export's conversion counts (`object -> option_filter`, `'' -> []`) |
+| `05_numeric` | Non-null counts equal to the source profiles |
+| `06_join_coverage` | About 98.9% of events geolocated; about 1.5% of product references without attributes |
+
+## When something goes wrong
+
+| Symptom | Cause | Action |
+| --- | --- | --- |
+| `publish-export` exits 1: "exists with other content" | Another export already wrote this export ID | Publish under a new `--export-id`; never overwrite |
+| No `_LOADED.json`; logs show *lacks run.routes.invoke* | `bq-loader` has no Cloud Run Invoker role | Grant it ([setup step 7](gcp_setup.md#7-let-the-trigger-call-the-function)). Eventarc retries by itself |
+| A log line `load failed and will not be retried` | Permanent error: layout mismatch, missing part, row count | Fix the cause, then `uv run load-bigquery gs://…/_load.json` |
+| Log warning `load not finished` | A job ran longer than 480 s, or a transient error | Nothing; Eventarc redelivers, and the redelivery waits on the same job |
+| Two `loaded` log lines for one table | More than one trigger on the bucket | Delete the extra trigger. BigQuery still holds one job |

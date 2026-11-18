@@ -184,7 +184,7 @@ uv run verify-export /data/glamira/exports/2026-11-17          # ~1 min: checksu
 uv run publish-export /data/glamira/exports/2026-11-17 --bucket <bucket> --dataset glamira_raw   # needs storage write scope
 ```
 
-The BigQuery load needs no VM. The Cloud Function starts it when `publish-export` writes each table's `_load.json`. The one-time setup (bucket, datasets, IAM, deploy) is in the [runbook](docs/runbooks/bigquery_load.md).
+The BigQuery load needs no VM. The Cloud Function starts it when `publish-export` writes each table's `_load.json`. The one-time cloud setup (bucket, datasets, IAM, function, VM scope) is in the [GCP setup guide](docs/runbooks/gcp_setup.md); running and verifying a load is in the [load runbook](docs/runbooks/bigquery_load.md).
 
 | Concern | How it is handled |
 | --- | --- |
@@ -215,7 +215,7 @@ scripts/            # deploy script for the function
 sql/checks/         # BigQuery verification queries
 docs/
 ├── raw_layer_contract.md
-├── runbooks/       # step-by-step operations (BigQuery load)
+├── runbooks/       # GCP setup and the BigQuery load, step by step
 ├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
@@ -236,6 +236,6 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Delete the duplicate Eventarc trigger, and narrow the loader's invoker role to the function ([load report](docs/reports/bigquery_load.md#5-limitations-and-follow-ups)).
+  - Delete the duplicate Eventarc trigger, and narrow the loader's invoker role to the function ([load report](docs/reports/bigquery_load.md#6-limitations-and-next-steps)).
   - Build the staging models in dbt on top of `glamira_raw.*`.
   - Use least-privilege MongoDB users for profiling and crawling.

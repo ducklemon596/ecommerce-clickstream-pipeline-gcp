@@ -48,7 +48,8 @@ class LoadResult:
     seconds: float
 
 
-def load_spec_job_config(spec: LoadSpec) -> bigquery.LoadJobConfig:
+def job_config() -> bigquery.LoadJobConfig:
+    """Avro with logical types (TIMESTAMP, NUMERIC), replacing the table's rows atomically."""
     return bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.AVRO,
         use_avro_logical_types=True,
@@ -70,7 +71,7 @@ def load(spec: LoadSpec, bq: bigquery.Client, gcs, *, wait_seconds: float | None
         job_id = spec.job_id(attempt)
         try:
             job = bq.load_table_from_uri(uris, destination, job_id=job_id, location=location,
-                                         job_config=load_spec_job_config(spec))
+                                         job_config=job_config())
             LOGGER.info("%s: submitted load job %s (%d files)", spec.destination, job_id, len(uris))
         except Conflict:
             job = bq.get_job(job_id, location=location)

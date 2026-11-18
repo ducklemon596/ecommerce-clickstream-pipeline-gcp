@@ -8,7 +8,7 @@ This runbook does the first load in four parts:
 
 How the pieces work is in the [warehouse guide](../../src/glamira_pipeline/warehouse/README.md).
 
-Run each block yourself and keep the output: the load report is written from it. Steps 1–3 are done once per project.
+Run each block yourself and keep the output. The first run's results are in the [load report](../reports/bigquery_load.md). Steps 1–3 are done once per project.
 
 ## 0. Variables
 
@@ -92,13 +92,14 @@ done
 
 ## 5. Full load
 
-**1. Let the VM write to GCS.** Do this while the VM is stopped. It keeps every current scope and turns storage read-only into read-write.
+**1. Let the VM write to GCS.** Do this while the VM is stopped. It keeps every current scope and turns storage read-only into read-write. Pass full scope URLs: gcloud rejects the short `devstorage.read_write` form.
 
 ```bash
 gcloud compute instances set-service-account glamira-mongodb --zone ${REGION}-b \
   --service-account $(gcloud compute instances describe glamira-mongodb --zone ${REGION}-b \
       --format 'value(serviceAccounts[0].email)') \
-  --scopes devstorage.read_write,logging.write,monitoring.write,service.management.readonly,servicecontrol,trace.append
+  --scopes $(printf 'https://www.googleapis.com/auth/%s,' devstorage.read_write logging.write monitoring.write \
+      service.management.readonly servicecontrol trace.append | sed 's/,$//')
 gcloud compute instances start glamira-mongodb --zone ${REGION}-b
 ```
 

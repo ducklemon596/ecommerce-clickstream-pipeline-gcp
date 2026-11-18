@@ -9,7 +9,7 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - publishes the files to GCS, where a Cloud Function loads them into BigQuery;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built, and the full data has been exported with them. Publishing to GCS and an event-triggered BigQuery load are built; their first run on the project is the current step. dbt and dashboards come after that.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built, and the full data has been exported with them. The full data is published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. dbt models and dashboards come next.
 
 ## Results at a glance
 
@@ -24,6 +24,7 @@ It answers to three business questions: geographic performance, product and cate
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
 | Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 53 min on the VM with 3 workers (2.4× faster end to end than one process), plus 53 s for `verify-export`. 0 contract violations, no retries. On the 100K sample, no raw IP, email, device ID or customer ID appeared in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
+| BigQuery load (full) | `glamira_raw`: 4 tables, 45,614,951 rows, 25.03 GB, one load job per table. Publish to GCS took 71 s; the Cloud Function finished all loads 36 s later. Every row count and all 65 day counts match the export; geolocation and product joins reproduce 98.88% and 1.54%. [Report](docs/reports/bigquery_load.md) |
 
 Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
 
@@ -215,7 +216,7 @@ sql/checks/         # BigQuery verification queries
 docs/
 ├── raw_layer_contract.md
 ├── runbooks/       # step-by-step operations (BigQuery load)
-├── reports/        # measured results (data quality, scope, product IDs, full load, full export)
+├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
 tests/integration/  # need a disposable local MongoDB
@@ -235,6 +236,6 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Run the [BigQuery runbook](docs/runbooks/bigquery_load.md): sample test load, then the full load, and record the results.
+  - Delete the duplicate Eventarc trigger, and narrow the loader's invoker role to the function ([load report](docs/reports/bigquery_load.md#5-limitations-and-follow-ups)).
   - Build the staging models in dbt on top of `glamira_raw.*`.
   - Use least-privilege MongoDB users for profiling and crawling.

@@ -34,7 +34,7 @@ flowchart LR
     X -->|fsync + rename| M[chunk _SUCCESS.json]
     M --> A[_manifest.json]
     A -->|rsync --checksums-only| G[(GCS export_id=…)]
-    G -->|deterministic job ID<br/>WRITE_TRUNCATE_DATA| B[(raw.table)]
+    G -->|deterministic job ID<br/>WRITE_TRUNCATE_DATA| B[(glamira_raw.table)]
 ```
 
 ### 1. Export identity

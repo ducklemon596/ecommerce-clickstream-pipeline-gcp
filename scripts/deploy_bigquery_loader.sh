@@ -2,13 +2,13 @@
 # Deploy the bigquery-loader Cloud Function (gen2) with a GCS trigger on the export bucket.
 #
 # Required environment: PROJECT, BUCKET, SERVICE_ACCOUNT (the loader's own service account email).
-# Optional: REGION (default asia-southeast1), ALLOWED_DATASETS (default raw), FUNCTION (default bigquery-loader).
+# Optional: REGION (default asia-southeast1), ALLOWED_DATASETS (default glamira_raw), FUNCTION (default bigquery-loader).
 # Usage: scripts/deploy_bigquery_loader.sh [--dry-run]
 set -euo pipefail
 
 : "${PROJECT:?set PROJECT}" "${BUCKET:?set BUCKET}" "${SERVICE_ACCOUNT:?set SERVICE_ACCOUNT}"
 REGION="${REGION:-asia-southeast1}"
-ALLOWED_DATASETS="${ALLOWED_DATASETS:-raw}"
+ALLOWED_DATASETS="${ALLOWED_DATASETS:-glamira_raw}"
 FUNCTION="${FUNCTION:-bigquery-loader}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

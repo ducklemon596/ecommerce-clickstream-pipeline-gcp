@@ -1,6 +1,6 @@
 # Raw layer data contract: Avro files and BigQuery tables
 
-**Status:** in force from 2026-11-17. **Applies to:** every file written by `export-avro` and every table in the BigQuery `raw` dataset.
+**Status:** in force from 2026-11-17. **Applies to:** every file written by `export-avro` and every table in the BigQuery `glamira_raw` dataset.
 
 The contract is code, not this page. Each table is declared once in [`tables.py`](../src/glamira_pipeline/export/tables.py). From that one declaration:
 
@@ -17,15 +17,15 @@ flowchart LR
     M[(MongoDB countly<br/>summary, ip_locations,<br/>products, product_option_values)] -->|read-only cursor| C[export-avro<br/>convert + HMAC]
     C --> F[part-NNNNN.avro<br/>schema files<br/>_manifest.json]
     F -->|publish-export| G[(GCS<br/>raw/&lt;table&gt;/export_id=…/)]
-    G -->|_load.json → Cloud Function<br/>AVRO load job| B[(BigQuery raw.*)]
+    G -->|_load.json → Cloud Function<br/>AVRO load job| B[(BigQuery glamira_raw.*)]
 ```
 
 | Table | Source collection | Grain | Key | Rows (2026-11-17) | Partition / cluster |
 | --- | --- | --- | --- | --- | --- |
-| `raw.events` | `countly.summary` | One tracking event | `_id` | 41,432,473 | `DATE(time_stamp)` (65 days) / `collection` |
-| `raw.ip_locations` | `countly.ip_locations` | One distinct valid IP | `ip_hash` | 3,239,627 | none (small) |
-| `raw.products` | `countly.products` | One product ID referenced by events | `product_id` | 19,557 | none |
-| `raw.product_option_values` | `countly.product_option_values` | One (product, option, value) | `product_id, option_id, value_id` | 923,294 | none |
+| `glamira_raw.events` | `countly.summary` | One tracking event | `_id` | 41,432,473 | `DATE(time_stamp)` (65 days) / `collection` |
+| `glamira_raw.ip_locations` | `countly.ip_locations` | One distinct valid IP | `ip_hash` | 3,239,627 | none (small) |
+| `glamira_raw.products` | `countly.products` | One product ID referenced by events | `product_id` | 19,557 | none |
+| `glamira_raw.product_option_values` | `countly.product_option_values` | One (product, option, value) | `product_id, option_id, value_id` | 923,294 | none |
 
 Row counts are those of the source collections; an export must reproduce them exactly (section 6).
 
@@ -89,11 +89,11 @@ Decided by the owner on 2026-11-16 (email, device ID) and 2026-11-17 (IP, custom
   - It lives only in the environment of the export run. It is never committed, logged or written next to the data.
   - It must be kept: an export with another key produces hashes that do not join with earlier ones.
 - **Checking the key:** each manifest records `pii_key_fingerprint`, an HMAC of a fixed message. Equal fingerprints mean the hashes are comparable. The key cannot be recovered from the fingerprint.
-- **Not pseudonymized:** `user_agent` (kept for browser, OS and device analysis in staging; `device_id_hash` already identifies the device), free text in `key_search`, and URLs. Keep the `raw` dataset restricted; column-level policy tags can be added later without a reload.
+- **Not pseudonymized:** `user_agent` (kept for browser, OS and device analysis in staging; `device_id_hash` already identifies the device), free text in `key_search`, and URLs. Keep the `glamira_raw` dataset restricted; column-level policy tags can be added later without a reload.
 
 ## 5. Tables
 
-### 5.1 `raw.events`
+### 5.1 `glamira_raw.events`
 
 Source: `countly.summary`, 27 event types. Source types are from the full scan of 41,432,473 documents on 2026-11-14.
 
@@ -185,7 +185,7 @@ Source: `countly.summary`, 27 event types. Source types are from the full scan o
 | `cart_products[].option[].value_id` | STRING | NULLABLE | `null \| string` | `cart_products[].option[].value_id` | int 1.13 M | `integer_as_string` | Value ID; int in the source |
 | `cart_products[].option[].value_label` | STRING | NULLABLE | `null \| string` | `cart_products[].option[].value_label` | string 1.13 M | — | Selected value label |
 
-### 5.2 `raw.ip_locations`
+### 5.2 `glamira_raw.ip_locations`
 
 Source: `countly.ip_locations`, written by `enrich-ip-locations` (offline IP2Location DB3 BIN dated 2016-11-29). Source types measured on 2026-11-17 over all 3,239,627 documents.
 
@@ -200,7 +200,7 @@ Source: `countly.ip_locations`, written by `enrich-ip-locations` (offline IP2Loc
 | `city` | STRING | NULLABLE | `null \| string` | `city` | string 3.20 M, null 40,075 | — | City; null when unknown |
 | `database_id` | STRING | REQUIRED | `string` | `database_id` | string 3.24 M | — | SHA-256 of the IP2Location BIN used |
 
-### 5.3 `raw.products`
+### 5.3 `glamira_raw.products`
 
 Source: `countly.products`, written by `crawl-products` from the 2026 catalog. These prices are not the prices of the 2020 events. Source types measured on 2026-11-17 over all 19,557 documents. The source `_id` equals `product_id` and is dropped.
 
@@ -251,7 +251,7 @@ Source: `countly.products`, written by `crawl-products` from the 2026 catalog. T
 | `source.url` | STRING | REQUIRED | `string` | `source.url` | string 19,557 | — | Requested react_data URL |
 | `source.requested_currency` | STRING | REQUIRED | `string` | `source.requested_currency` | string 19,557 | — | Currency requested |
 
-### 5.4 `raw.product_option_values`
+### 5.4 `glamira_raw.product_option_values`
 
 Source: `countly.product_option_values`. Source types measured on 2026-11-17 over all 923,294 documents. The source `_id` is `{product_id, option_id, value_id}` and is dropped.
 
@@ -359,11 +359,11 @@ The default never decodes, because the SHA-256 covers every byte that was checke
 ## 7. Loading into BigQuery
 
 ```bash
-uv run publish-export /data/exports/2026-11-17 --bucket <bucket> --dataset raw
+uv run publish-export /data/exports/2026-11-17 --bucket <bucket> --dataset glamira_raw
 ```
 
 - `publish-export` verifies the export, uploads it to `gs://<bucket>/raw/<table>/export_id=<export-id>/`, and writes `_load.json` last.
-- The `bigquery-loader` Cloud Function then loads each table into `raw.<table>`. It creates the table from the contract on first use, with day partitioning on `events.time_stamp` and clustering by `collection`.
+- The `bigquery-loader` Cloud Function then loads each table into `glamira_raw.<table>`. It creates the table from the contract on first use, with day partitioning on `events.time_stamp` and clustering by `collection`.
 - The load uses a deterministic job ID and `WRITE_TRUNCATE_DATA`, then checks the row count. Repeating any step changes nothing.
 - The setup, IAM and checks are in the [runbook](runbooks/bigquery_load.md); how the load works is in the [warehouse guide](../src/glamira_pipeline/warehouse/README.md).
 

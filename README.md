@@ -44,7 +44,7 @@ flowchart LR
     C --> RUN
     M & IL & P -->|export-avro: contract + HMAC| X[Avro parts<br/>+ manifest]
     X -->|publish-export| GCS[(GCS raw/)]
-    GCS -->|_load.json → Cloud Function| BQ[(BigQuery raw.*)]
+    GCS -->|_load.json → Cloud Function| BQ[(BigQuery glamira_raw.*)]
 ```
 
 - **Hosting:** MongoDB runs on a Compute Engine VM with its data on a dedicated XFS persistent disk.
@@ -68,7 +68,7 @@ flowchart LR
 | 5 | Export the raw layer | `uv run export-avro --table all --output-dir … --export-id …` | Full, read only, in day chunks (`--workers N` in parallel); rerun to resume (`--limit N` for a labelled sample) | Avro parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md), [run report](docs/reports/full_export_avro.md) |
 | 5b | Verify a stored export | `uv run verify-export <export dir>` | Checksums and inventory, no decoding (`--full` decodes every record) | Pass or exit 1 with the first difference |
 | 6 | Publish to GCS | `uv run publish-export <export dir> --bucket …` | Verified export; create-only uploads, `_load.json` last | `gs://…/raw/<table>/export_id=<id>/`; [warehouse guide](src/glamira_pipeline/warehouse/README.md) |
-| 6b | Load BigQuery | Cloud Function `bigquery-loader` on `_load.json` (`uv run load-bigquery <spec>` by hand) | Whole table per export, `WRITE_TRUNCATE_DATA` | `raw.<table>` and `_LOADED.json`; [runbook](docs/runbooks/bigquery_load.md) |
+| 6b | Load BigQuery | Cloud Function `bigquery-loader` on `_load.json` (`uv run load-bigquery <spec>` by hand) | Whole table per export, `WRITE_TRUNCATE_DATA` | `glamira_raw.<table>` and `_LOADED.json`; [runbook](docs/runbooks/bigquery_load.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -180,7 +180,7 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
 uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17 --workers 3   # ~53 min, read only; rerun to resume
 uv run verify-export /data/glamira/exports/2026-11-17          # ~1 min: checksums and inventory; --full decodes
-uv run publish-export /data/glamira/exports/2026-11-17 --bucket <bucket> --dataset raw   # needs storage write scope
+uv run publish-export /data/glamira/exports/2026-11-17 --bucket <bucket> --dataset glamira_raw   # needs storage write scope
 ```
 
 The BigQuery load needs no VM. The Cloud Function starts it when `publish-export` writes each table's `_load.json`. The one-time setup (bucket, datasets, IAM, deploy) is in the [runbook](docs/runbooks/bigquery_load.md).
@@ -236,5 +236,5 @@ tests/integration/  # need a disposable local MongoDB
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
   - Run the [BigQuery runbook](docs/runbooks/bigquery_load.md): sample test load, then the full load, and record the results.
-  - Build the staging models in dbt on top of `raw.*`.
+  - Build the staging models in dbt on top of `glamira_raw.*`.
   - Use least-privilege MongoDB users for profiling and crawling.

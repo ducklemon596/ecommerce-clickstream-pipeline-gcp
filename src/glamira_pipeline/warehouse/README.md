@@ -36,7 +36,7 @@ gs://<bucket>/<prefix>/<table>/export_id=<export-id>/
 
 ```bash
 # Where the export is (the VM for the full export). Needs storage write access.
-uv run publish-export <export dir or table dir> --bucket <bucket> [--prefix raw] [--dataset raw] [--workers 4]
+uv run publish-export <export dir or table dir> --bucket <bucket> [--prefix raw] [--dataset glamira_raw] [--workers 4]
 
 # By hand, with Application Default Credentials. Normally the function does this.
 uv run load-bigquery gs://<bucket>/raw/<table>/export_id=<id>/_load.json [--ignore-marker]

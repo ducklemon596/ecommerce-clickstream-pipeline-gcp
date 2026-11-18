@@ -29,7 +29,8 @@ def publish_main() -> None:
     parser.add_argument("directory", type=Path, help="an export directory, or one table directory in it")
     parser.add_argument("--bucket", required=True, help="target bucket name, without gs://")
     parser.add_argument("--prefix", default="raw", help="object prefix (default: raw)")
-    parser.add_argument("--dataset", default="raw", help="BigQuery dataset the load spec targets (default: raw)")
+    parser.add_argument("--dataset", default="glamira_raw",
+                        help="BigQuery dataset the load spec targets (default: glamira_raw)")
     parser.add_argument("--workers", type=int, default=4, help="parallel part uploads (default 4)")
     parser.add_argument("--schema-dir", type=Path, default=SCHEMA_DIR, help="committed Avro schemas")
     args = parser.parse_args()

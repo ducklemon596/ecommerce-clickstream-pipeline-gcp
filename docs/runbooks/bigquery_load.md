@@ -2,8 +2,8 @@
 
 This runbook does the first load in four parts:
 - **Setup:** create the GCS bucket, the BigQuery datasets and a least-privilege service account, then deploy the `bigquery-loader` Cloud Function.
-- **Test:** load the 100K sample into `raw_sample`.
-- **Full load:** load the full export into `raw`.
+- **Test:** load the 100K sample into `glamira_raw_sample`.
+- **Full load:** load the full export into `glamira_raw`.
 - **Repeats:** check that repeating any step changes nothing.
 
 How the pieces work is in the [warehouse guide](../../src/glamira_pipeline/warehouse/README.md).
@@ -15,7 +15,7 @@ Run each block yourself and keep the output: the load report is written from it.
 ```bash
 export PROJECT=<project-id>
 export REGION=asia-southeast1
-export BUCKET=glamira-raw-data-asia-southeast1
+export BUCKET=glamira-raw-datalake-asia-southeast1
 export SA=bq-loader@$PROJECT.iam.gserviceaccount.com
 gcloud config set project $PROJECT
 ```
@@ -29,8 +29,8 @@ gcloud services enable cloudfunctions.googleapis.com run.googleapis.com eventarc
 gcloud storage buckets create gs://$BUCKET --location $REGION --default-storage-class STANDARD \
   --uniform-bucket-level-access --public-access-prevention
 
-bq mk --location $REGION --dataset --description "Raw layer, loaded from verified Avro exports" $PROJECT:raw
-bq mk --location $REGION --dataset --description "Raw layer test loads (100K sample)" $PROJECT:raw_sample
+bq mk --location $REGION --dataset --description "Raw layer, loaded from verified Avro exports" $PROJECT:glamira_raw
+bq mk --location $REGION --dataset --description "Raw layer test loads (100K sample)" $PROJECT:glamira_raw_sample
 ```
 
 **Why these settings.** The bucket and the datasets must be in the same region, because a load job cannot read a bucket in another location. Uniform access and public-access prevention keep the raw data private.
@@ -42,7 +42,7 @@ gcloud iam service-accounts create bq-loader --display-name "BigQuery raw loader
 
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/bigquery.jobUser
 gcloud projects add-iam-policy-binding $PROJECT --member serviceAccount:$SA --role roles/eventarc.eventReceiver
-for dataset in raw raw_sample; do
+for dataset in glamira_raw glamira_raw_sample; do
   bq add-iam-policy-binding --member serviceAccount:$SA --role roles/bigquery.dataEditor $PROJECT:$dataset
 done
 for role in roles/storage.objectViewer roles/storage.objectCreator; do
@@ -59,9 +59,9 @@ The loader can read objects and create new ones (`_LOADED.json`), but it cannot 
 ## 3. Deploy the function
 
 ```bash
-PROJECT=$PROJECT BUCKET=$BUCKET SERVICE_ACCOUNT=$SA ALLOWED_DATASETS=raw,raw_sample \
+PROJECT=$PROJECT BUCKET=$BUCKET SERVICE_ACCOUNT=$SA ALLOWED_DATASETS=glamira_raw,glamira_raw_sample \
   scripts/deploy_bigquery_loader.sh --dry-run          # check the command and the staged files
-PROJECT=$PROJECT BUCKET=$BUCKET SERVICE_ACCOUNT=$SA ALLOWED_DATASETS=raw,raw_sample \
+PROJECT=$PROJECT BUCKET=$BUCKET SERVICE_ACCOUNT=$SA ALLOWED_DATASETS=glamira_raw,glamira_raw_sample \
   scripts/deploy_bigquery_loader.sh
 gcloud functions add-invoker-policy-binding bigquery-loader --region $REGION --member serviceAccount:$SA
 ```
@@ -74,13 +74,13 @@ On the workstation, the sample export is `data/exports/sample-100k`. It holds `e
 
 ```bash
 gcloud auth application-default login                       # once; credentials for publish-export and load-bigquery
-uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset raw_sample
+uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset glamira_raw_sample
 
 gcloud functions logs read bigquery-loader --region $REGION --limit 20
 gcloud storage cat gs://$BUCKET/raw_sample/events/export_id=sample-100k/_LOADED.json
 
 for check in 01_tables 02_layout 03_events_by_day 04_events_shapes; do
-  sed 's/{{dataset}}/raw_sample/g' sql/checks/$check.sql | bq query --use_legacy_sql=false --format=prettyjson
+  sed 's/{{dataset}}/glamira_raw_sample/g' sql/checks/$check.sql | bq query --use_legacy_sql=false --format=prettyjson
 done
 ```
 
@@ -106,7 +106,7 @@ gcloud compute instances start glamira-mongodb --zone ${REGION}-b
 
 ```bash
 uv sync --frozen
-uv run publish-export /data/mongodb/benchmark-work/export/full-2026-11-17-w3 --bucket <bucket> --dataset raw \
+uv run publish-export /data/mongodb/benchmark-work/export/full-2026-11-17-w3 --bucket glamira-raw-datalake-asia-southeast1 --dataset glamira_raw \
   2>&1 | tee publish_full.log
 ```
 
@@ -122,7 +122,7 @@ gcloud compute instances stop glamira-mongodb --zone ${REGION}-b
 gcloud functions logs read bigquery-loader --region $REGION --limit 50
 gcloud storage ls "gs://$BUCKET/raw/*/export_id=full-2026-11-17-w3/_LOADED.json"
 for check in 01_tables 02_layout 03_events_by_day 04_events_shapes 05_numeric 06_join_coverage; do
-  sed 's/{{dataset}}/raw/g' sql/checks/$check.sql | bq query --use_legacy_sql=false --format=prettyjson
+  sed 's/{{dataset}}/glamira_raw/g' sql/checks/$check.sql | bq query --use_legacy_sql=false --format=prettyjson
 done
 ```
 
@@ -135,11 +135,11 @@ done
 
 ```bash
 # Upload again: every object is skipped (uploaded 0).
-uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset raw_sample
+uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset glamira_raw_sample
 
 # Load again past the marker: the job ID already exists (409), so the same job is reused and the count is unchanged.
 uv run load-bigquery gs://$BUCKET/raw_sample/events/export_id=sample-100k/_load.json --ignore-marker
-sed 's/{{dataset}}/raw_sample/g' sql/checks/01_tables.sql | bq query --use_legacy_sql=false
+sed 's/{{dataset}}/glamira_raw_sample/g' sql/checks/01_tables.sql | bq query --use_legacy_sql=false
 ```
 
 ## 7. What to send back

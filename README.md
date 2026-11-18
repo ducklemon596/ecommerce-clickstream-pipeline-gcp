@@ -6,9 +6,10 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - loads and validates it in MongoDB;
 - enriches it with IP geolocation and product attributes;
 - exports it to Avro files that match the BigQuery raw-layer schema;
+- publishes the files to GCS, where a Cloud Function loads them into BigQuery;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built, and the full data has been exported with them. The next stage is upload to GCS and loading into BigQuery; dbt and dashboards come after that.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The Avro exporter and the [raw layer contract](docs/raw_layer_contract.md) are built, and the full data has been exported with them. The full data is published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. dbt models and dashboards come next.
 
 ## Results at a glance
 
@@ -23,6 +24,7 @@ It answers to three business questions: geographic performance, product and cate
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
 | Avro export (full) | 4 tables, 45,614,951 rows, 9.30 GB in 53 min on the VM with 3 workers (2.4× faster end to end than one process), plus 53 s for `verify-export`. 0 contract violations, no retries. On the 100K sample, no raw IP, email, device ID or customer ID appeared in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
+| BigQuery load (full) | `glamira_raw`: 4 tables, 45,614,951 rows, 25.03 GB, one load job per table. Publish to GCS took 71 s; the Cloud Function finished all loads 36 s later. Every row count and all 65 day counts match the export; geolocation and product joins reproduce 98.88% and 1.54%. [Report](docs/reports/bigquery_load.md) |
 
 Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
 
@@ -41,7 +43,9 @@ flowchart LR
     C --> P[(products<br/>product_option_values)]
     I --> RUN[(enrichment_runs)]
     C --> RUN
-    M & IL & P -->|export-avro: contract + HMAC| X[Avro parts<br/>+ manifest] -.->|next: GCS, bq load| BQ[(BigQuery raw.*)]
+    M & IL & P -->|export-avro: contract + HMAC| X[Avro parts<br/>+ manifest]
+    X -->|publish-export| GCS[(GCS raw/)]
+    GCS -->|_load.json → Cloud Function| BQ[(BigQuery glamira_raw.*)]
 ```
 
 - **Hosting:** MongoDB runs on a Compute Engine VM with its data on a dedicated XFS persistent disk.
@@ -64,6 +68,8 @@ flowchart LR
 | 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
 | 5 | Export the raw layer | `uv run export-avro --table all --output-dir … --export-id …` | Full, read only, in day chunks (`--workers N` in parallel); rerun to resume (`--limit N` for a labelled sample) | Avro parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md), [run report](docs/reports/full_export_avro.md) |
 | 5b | Verify a stored export | `uv run verify-export <export dir>` | Checksums and inventory, no decoding (`--full` decodes every record) | Pass or exit 1 with the first difference |
+| 6 | Publish to GCS | `uv run publish-export <export dir> --bucket …` | Verified export; create-only uploads, `_load.json` last | `gs://…/raw/<table>/export_id=<id>/`; [warehouse guide](src/glamira_pipeline/warehouse/README.md) |
+| 6b | Load BigQuery | Cloud Function `bigquery-loader` on `_load.json` (`uv run load-bigquery <spec>` by hand) | Whole table per export, `WRITE_TRUNCATE_DATA` | `glamira_raw.<table>` and `_LOADED.json`; [runbook](docs/runbooks/bigquery_load.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -84,12 +90,13 @@ Each step started with measurement on a sample, chose the simplest option that t
 | Storage target | Files during the crawl; MongoDB | MongoDB already hosts the source and provides upsert plus schema validation | **MongoDB now**; GCS/BigQuery export as a separate snapshot step |
 | `option` filter object | STRUCT; `ARRAY<STRUCT<key, value>>` | 10 keys in two fixed sets, one per event type | **STRUCT**: plain columns, and an unknown key fails the export |
 | Export format for GCS → BigQuery | JSONL; Avro | JSONL defers type errors to the BigQuery load and lets BigQuery coerce values implicitly. Avro checks every row against the schema when the file is written, and BigQuery reads compressed Avro in parallel | **Avro**, with one schema shared by Avro and the BigQuery raw table; [decision record](docs/decisions/raw_events_schema.md), [contract](docs/raw_layer_contract.md) |
+| Triggering the BigQuery load | Manual `bq load`; a scheduled job; a Cloud Function on the upload | A schedule polls and can fire on a half-uploaded export; a manual load is easy to forget or repeat. The upload already writes a completion marker | **Cloud Function on `_load.json`**, written last by `publish-export`; a deterministic job ID and `_LOADED.json` make Eventarc's repeated deliveries harmless |
 | Personal data in BigQuery | Export as is; hash | Email, device ID, customer ID and IP are not needed in clear text for any business question; geolocation only needs a join key | **HMAC-SHA256** with a secret key of `email_address`, `device_id`, `user_id_db` and `ip`; `ip_locations` is keyed by the same IP hash, so the join still works |
 
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
 - [Raw events schema decision record](docs/decisions/raw_events_schema.md)
-- [Retry-safe, idempotent export decision record](docs/decisions/export_retry_idempotency.md) (export and verification implemented; GCS upload and BigQuery load designed)
+- [Retry-safe, idempotent export decision record](docs/decisions/export_retry_idempotency.md) (export, verification, GCS publish and the triggered BigQuery load)
 - [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
 
 ## How data correctness is ensured
@@ -108,6 +115,7 @@ Details and caveats:
   - Counts are checked after every full run: 19,557 product documents = 19,557 input IDs; option rows reconcile with `option_count`; IP frequencies reconcile with the 41,432,473 scanned events.
   - IP output is verified in a staging collection before publication.
 - **A typed raw contract.** The export refuses unknown keys, unplanned types and missing REQUIRED values, counts every conversion, and records the SHA-256 of each Avro part; `verify-export` re-checks a stored export against its manifest and the committed schemas. One declaration generates the Avro schema, the BigQuery schema and the converter.
+- **Verified, idempotent load.** Uploads are create-only and checked by CRC32C. Each load names its job after the export's content hash, replaces the table atomically, and must end with the manifest's row count.
 - **Resumable, deterministic export.** Events are exported in one chunk per day of `_id`, optionally by parallel worker processes, each chunk committed by a marker written after its parts. A rerun verifies and skips committed chunks and redoes only the open one; the same inputs give byte-identical files.
 - **Provenance.** Each run is recorded in `enrichment_runs`:
   - its parameters;
@@ -173,7 +181,10 @@ uv run crawl-products --ids-file data/product_ids/full/product_ids.jsonl \
 export GLAMIRA_PII_HASH_KEY=...                                # the project PII key (see .env.example)
 uv run export-avro --table all --output-dir /data/glamira/exports --export-id 2026-11-17 --workers 3   # ~53 min, read only; rerun to resume
 uv run verify-export /data/glamira/exports/2026-11-17          # ~1 min: checksums and inventory; --full decodes
+uv run publish-export /data/glamira/exports/2026-11-17 --bucket <bucket> --dataset glamira_raw   # needs storage write scope
 ```
+
+The BigQuery load needs no VM. The Cloud Function starts it when `publish-export` writes each table's `_load.json`. The one-time cloud setup (bucket, datasets, IAM, function, VM scope) is in the [GCP setup guide](docs/runbooks/gcp_setup.md); running and verifying a load is in the [load runbook](docs/runbooks/bigquery_load.md).
 
 | Concern | How it is handled |
 | --- | --- |
@@ -196,11 +207,16 @@ src/glamira_pipeline/
 ├── ip_location/    # Counter scan, offline lookup, verified publication
 ├── products/       # distinct IDs, react_data crawl, MongoDB store
 ├── export/         # raw-layer contract, PII hashing, Avro export
+├── warehouse/      # GCS publish, load spec, idempotent BigQuery load, Cloud Function body
 └── provenance.py   # file and collection identities for run records
 schemas/raw/        # generated Avro (.avsc) and BigQuery (.bq.json) schemas
+functions/          # Cloud Function entry point (bigquery_loader/)
+scripts/            # deploy script for the function
+sql/checks/         # BigQuery verification queries
 docs/
 ├── raw_layer_contract.md
-├── reports/        # measured results (data quality, scope, product IDs, full load, full export)
+├── runbooks/       # GCP setup and the BigQuery load, step by step
+├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
 tests/integration/  # need a disposable local MongoDB
@@ -220,6 +236,6 @@ tests/integration/  # need a disposable local MongoDB
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Upload the verified export to GCS, run a small BigQuery test load, then build the idempotent loader (`load/bigquery.py`, designed in the export decision record).
-  - Scan the full export output for raw PII; only the 100K sample output has been scanned so far.
+  - Delete the duplicate Eventarc trigger, and narrow the loader's invoker role to the function ([load report](docs/reports/bigquery_load.md#6-limitations-and-next-steps)).
+  - Build the staging models in dbt on top of `glamira_raw.*`.
   - Use least-privilege MongoDB users for profiling and crawling.

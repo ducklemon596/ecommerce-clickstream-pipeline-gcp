@@ -1,7 +1,7 @@
 # Decision record: retry-safe, idempotent raw export
 
-**Status:** accepted and implemented on 2026-11-17, for `export-avro` and `verify-export`. The GCS upload and BigQuery load (section 7) are designed but not built yet.
-**Scope:** the export of the four raw tables in the [raw layer contract](../raw_layer_contract.md).
+**Status:** accepted. The export (`export-avro`, `verify-export`) was implemented on 2026-11-17. The GCS upload and the BigQuery load (`publish-export`, the `bigquery-loader` Cloud Function, `load-bigquery`; section 7) were implemented on 2026-11-18.
+**Scope:** the export of the four raw tables in the [raw layer contract](../raw_layer_contract.md), their upload to GCS, and their load into BigQuery.
 
 ## Context
 
@@ -34,7 +34,7 @@ flowchart LR
     X -->|fsync + rename| M[chunk _SUCCESS.json]
     M --> A[_manifest.json]
     A -->|rsync --checksums-only| G[(GCS export_id=…)]
-    G -->|deterministic job ID<br/>WRITE_TRUNCATE_DATA| B[(raw.table)]
+    G -->|deterministic job ID<br/>WRITE_TRUNCATE_DATA| B[(glamira_raw.table)]
 ```
 
 ### 1. Export identity
@@ -118,17 +118,27 @@ Convert and write are CPU-bound Python, so chunks run in **spawned processes**, 
 3. waits for the running chunks to stop uncommitted;
 4. re-raises the error.
 
-### 7. Upload and BigQuery load (designed, not built)
+### 7. Upload and BigQuery load
 
-- **Upload:**
-  - only after `_manifest.json` exists, into `gs://<bucket>/raw/<table>/export_id=<export-id>/`;
-  - with `gcloud storage rsync --recursive --checksums-only`, which skips identical objects by hash;
-  - one prefix per export ID, so a new export never overwrites an old one.
+The upload and the load are built in the [warehouse package](../../src/glamira_pipeline/warehouse/README.md) and follow the same pattern as the export: units of work, a commit marker written last, and verification before skipping.
+
+- **Upload (`publish-export`):**
+  1. Verify the export.
+  2. Upload, into `gs://<bucket>/raw/<table>/export_id=<export-id>/`, only the parts the manifest lists, then the schemas and the manifest. Every write is create-only (`if_generation_match=0`); an object that already exists must match by CRC32C.
+  3. Write **`_load.json` last**. It is the load spec: the source URIs and sizes, the schema, partitioning and clustering, the row count and `content_sha256`.
+  - Its presence means the table is complete in the bucket, and it is what triggers the load.
+  - One prefix per export ID means a new export never overwrites an old one.
+- **Trigger:** a Cloud Function on the bucket's finalize events.
+  - It ignores everything except `_load.json`.
+  - Eventarc delivers at least once, so every step below must be safe to repeat.
 - **Load:**
-  - **Job ID:** `load_<table>_<export-id>_<first 12 hex of content_sha256>`. A resubmission gets `409 duplicate`, and the loader reads the outcome with `jobs.get`. A failed job is retried under a suffixed ID, only after every earlier attempt is confirmed failed.
-  - **Write disposition:** `WRITE_TRUNCATE_DATA` into the table created from `schemas/raw/<table>.bq.json`. It replaces the rows atomically and keeps the table's partitioning, clustering, modes and descriptions. `WRITE_TRUNCATE` would take the schema from the Avro files.
-  - **Source URIs:** the parts listed in the manifest, not a wildcard, so stray objects are never loaded.
-- **After the load:** `COUNT(*)` must equal the manifest rows.
+  - **Job ID:** `load_<dataset>_<table>_<export-id>_<first 12 hex of content_sha256>`. A redelivery gets `409`, reads that job and waits for it. A job that failed with a transient reason is retried under `_r<n>`.
+  - **Write disposition:** `WRITE_TRUNCATE_DATA` into the table created from the contract. It replaces the rows atomically and keeps the table's partitioning, clustering, modes and descriptions. `WRITE_TRUNCATE` would take the schema from the Avro files.
+  - **Sources:** the URIs listed in the spec, never a wildcard, so stray objects are never loaded. Each must exist with its recorded size.
+- **After the load:** the table's row count must equal the spec. Only then is **`_LOADED.json`** written, so a later delivery stops before calling BigQuery.
+- **Error classes:**
+  - Transient (a job still running after 480 s, transient job or API errors): raised, so Eventarc redelivers, and the redelivery waits on the same job.
+  - Permanent (bad spec, layout mismatch, missing part, failed job, count mismatch): logged and not retried. Fix the cause, then run `load-bigquery` on the same spec.
 - **Not one load per day partition.** Chunks follow the `_id` day, and 166 events have a `time_stamp` on the neighbouring day, within 5 s of midnight. BigQuery would reject those rows from a single-partition load.
 
 ## Evidence
@@ -147,7 +157,7 @@ Convert and write are CPU-bound Python, so chunks run in **spawned processes**, 
 - Reading by `_id` range is 13–14% of the work; convert and write dominate. The extra server cost of sorted reads therefore does not matter.
 - With 3 workers: export 52 min 46 s, then `verify-export` 53 s.
 
-**BigQuery behaviour:** taken from the documentation; not yet tested against this data.
+**BigQuery behaviour:** taken from the documentation. The loader's handling of 409, transient failures and row counts is unit-tested against fakes; the first real loads are recorded in the load report.
 - A load job is atomic ([batch loading](https://docs.cloud.google.com/bigquery/docs/batch-loading-data)).
 - `WRITE_TRUNCATE_DATA` keeps the table schema ([Job reference](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job)).
 - Client-chosen job IDs are idempotent ([reliability](https://docs.cloud.google.com/bigquery/docs/reliability-intro)).
@@ -180,6 +190,7 @@ Convert and write are CPU-bound Python, so chunks run in **spawned processes**, 
 | [`export/exporter.py`](../../src/glamira_pipeline/export/exporter.py) | Table export, chunk retries, manifest |
 | [`export/parallel.py`](../../src/glamira_pipeline/export/parallel.py) | Worker processes and coordinated stop |
 | [`export/verify.py`](../../src/glamira_pipeline/export/verify.py) | `verify-export` |
+| [`warehouse/`](../../src/glamira_pipeline/warehouse/README.md) | `publish-export`, the load spec, the idempotent BigQuery load, the Cloud Function |
 
 **Tests**
 - Unit tests:

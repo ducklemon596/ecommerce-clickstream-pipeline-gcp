@@ -85,7 +85,7 @@ In BigQuery, the array is read with `UNNEST`:
 
 ```sql
 SELECT e._id, o.option_label, o.value_id
-FROM raw.events AS e, UNNEST(e.option) AS o
+FROM glamira_raw.events AS e, UNNEST(e.option) AS o
 WHERE e.collection = 'view_product_detail'
 ```
 
@@ -146,7 +146,7 @@ Reading both levels:
 
 ```sql
 SELECT e._id, line.product_id, line.amount, opt.option_label, opt.value_label
-FROM raw.events AS e, UNNEST(e.cart_products) AS line
+FROM glamira_raw.events AS e, UNNEST(e.cart_products) AS line
 LEFT JOIN UNNEST(line.option) AS opt
 WHERE e.collection = 'checkout_success'
 ```
@@ -155,7 +155,7 @@ WHERE e.collection = 'checkout_success'
 
 `time_stamp` is a plain int of Unix seconds (`1591266092` for the first example). It is written as an Avro `long` with the logical type `timestamp-micros` (`1591266092000000`) so that BigQuery creates a TIMESTAMP column, which partitioning needs.
 
-## Schema: `raw.events`
+## Schema: `glamira_raw.events`
 
 **Table settings**
 - Partitioned by `DATE(time_stamp)`. The data spans 2020-04-01 to 2020-06-04: 65 daily partitions.

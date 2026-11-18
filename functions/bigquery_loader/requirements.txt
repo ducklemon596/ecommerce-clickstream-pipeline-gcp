@@ -1,0 +1,4 @@
+# Pinned to the versions in uv.lock; update both together.
+functions-framework==3.10.2
+google-cloud-bigquery==3.47.0
+google-cloud-storage==3.17.1

@@ -68,6 +68,8 @@ class Table:
     ``redundant_id`` names the fields the source ``_id`` duplicates; the
     converter checks the equality and drops ``_id``. ``sensitive_key`` keeps
     the source ``_id`` out of error messages (it is a raw IP for ``ip_locations``).
+    ``partition_by`` (a REQUIRED TIMESTAMP column, partitioned by day) and
+    ``cluster_by`` (up to four top-level scalar columns) shape the BigQuery table.
     """
 
     name: str
@@ -77,6 +79,21 @@ class Table:
     fields: tuple[Field, ...]
     redundant_id: tuple[str, ...] = ()
     sensitive_key: bool = False
+    partition_by: str | None = None
+    cluster_by: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        columns = {field.name: field for field in self.fields}
+        if self.partition_by is not None:
+            field = columns.get(self.partition_by)
+            if field is None or field.type != TIMESTAMP or field.mode != REQUIRED:
+                raise ValueError(f"{self.name}: partition_by must name a REQUIRED TIMESTAMP column")
+        if len(self.cluster_by) > 4:
+            raise ValueError(f"{self.name}: BigQuery allows at most four clustering columns")
+        for name in self.cluster_by:
+            field = columns.get(name)
+            if field is None or isinstance(field.type, Record) or field.mode == REPEATED:
+                raise ValueError(f"{self.name}: cluster_by column {name!r} must be a top-level scalar")
 
 
 def avro_schema(table: Table) -> dict:

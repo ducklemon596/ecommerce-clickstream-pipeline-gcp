@@ -15,6 +15,21 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Stage only what the function imports: main.py, requirements.txt and the warehouse modules
 # that depend on the Google Cloud clients alone (not publish/cli, which need the export package).
+# The staged source, which is also the root of the --zip file, looks like this:
+#
+#   $SOURCE/
+#   ├── main.py                    <- functions/bigquery_loader/main.py (entry point: on_object_finalized)
+#   ├── requirements.txt           <- functions/bigquery_loader/requirements.txt (installed by Cloud Build)
+#   └── glamira_pipeline/
+#       ├── __init__.py            <- src/glamira_pipeline/__init__.py
+#       └── warehouse/             <- src/glamira_pipeline/warehouse/, these five modules only
+#           ├── __init__.py
+#           ├── spec.py
+#           ├── bigquery.py
+#           ├── runner.py
+#           └── function.py
+#
+# A new import inside these modules must be staged here too, or the deployed function fails on import.
 SOURCE="$(mktemp -d)"
 trap 'rm -rf "$SOURCE"' EXIT
 cp "$ROOT/functions/bigquery_loader/main.py" "$ROOT/functions/bigquery_loader/requirements.txt" "$SOURCE/"

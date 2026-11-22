@@ -7,7 +7,7 @@ enrichment tables are small and exported as one chunk, ``all``. A ``--limit``
 sample is always one chunk: the first N documents by ``_id``.
 
 Every chunk is read sorted by ``_id``, so a chunk's rows, and therefore its
-Avro bytes, do not depend on the physical order of the collection.
+Parquet bytes, do not depend on the physical order of the collection.
 """
 from __future__ import annotations
 

@@ -8,22 +8,23 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from bson.objectid import ObjectId
+import pyarrow as pa
 
-from glamira_pipeline.export.avro_files import AvroPartWriter, part_dicts
 from glamira_pipeline.export.chunks import Chunk, CoverageError, check_coverage, daily_chunks
 from glamira_pipeline.export.exporter import content_sha256
+from glamira_pipeline.export.parquet_files import ParquetPartWriter, part_dicts
 from glamira_pipeline.export.state import (SUCCESS, StateError, claim_identity, commit_chunk, committed_chunk,
                                            exclusive_lock, reset_chunk)
 
-SCHEMA = {"type": "record", "name": "T", "fields": [{"name": "v", "type": "long"}]}
+SCHEMA = pa.schema([pa.field("v", pa.int64(), nullable=False)])
 
 
 def utc(*args):
     return datetime(*args, tzinfo=timezone.utc)
 
 
-def write_parts(directory: Path, rows: int, seed: str = "t/c", rows_per_file: int = 4):
-    writer = AvroPartWriter(directory, SCHEMA, rows_per_file=rows_per_file, sync_seed=seed)
+def write_parts(directory: Path, rows: int, rows_per_file: int = 4):
+    writer = ParquetPartWriter(directory, SCHEMA, rows_per_file=rows_per_file, row_group_rows=2)
     for value in range(rows):
         writer.write({"v": value})
     return writer.close()
@@ -62,25 +63,23 @@ class DeterministicPartTests(unittest.TestCase):
             self.assertEqual(len(first), 3)
 
     def test_bytes_do_not_depend_on_the_process_hash_seed(self):
-        """Worker processes have their own hash seeds; the Avro header must not depend on them."""
-        script = ("import hashlib, sys, tempfile, pathlib\n"
-                  "from glamira_pipeline.export.avro_files import AvroPartWriter\n"
-                  "from glamira_pipeline.export.schema import avro_schema\n"
+        """Worker processes have their own hash seeds; the Parquet bytes must not depend on them."""
+        script = ("import tempfile, pathlib\n"
+                  "from glamira_pipeline.export.parquet_files import ParquetPartWriter\n"
+                  "from glamira_pipeline.export.schema import bigquery_schema, parquet_schema\n"
                   "from glamira_pipeline.export.tables import PRODUCT_OPTION_VALUES\n"
-                  "d = pathlib.Path(tempfile.mkdtemp())\n"
-                  "w = AvroPartWriter(d, avro_schema(PRODUCT_OPTION_VALUES), sync_seed='s')\n"
-                  "w._open(); w._writer.flush(); w._stream.flush()\n"
-                  "print(hashlib.sha256((d / 'part-00000.avro.tmp').read_bytes()).hexdigest())\n")
+                  "w = ParquetPartWriter(pathlib.Path(tempfile.mkdtemp()), "
+                  "parquet_schema(bigquery_schema(PRODUCT_OPTION_VALUES)))\n"
+                  "for i in range(5):\n"
+                  "    w.write({'product_id': str(i), 'option_id': 'o', 'is_require': True, 'run_id': 'r', "
+                  "'crawled_at': 1_600_000_000_000_000 + i})\n"
+                  "print(w.close()[0].sha256)\n")
         digests = {subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True,
                                   env={**os.environ, "PYTHONHASHSEED": str(seed)}).stdout for seed in (1, 2, 3, 4)}
         self.assertEqual(len(digests), 1)
 
-    def test_seed_changes_the_bytes(self):
-        with TemporaryDirectory() as a, TemporaryDirectory() as b:
-            self.assertNotEqual(write_parts(Path(a), 3, "t/x")[0].sha256, write_parts(Path(b), 3, "t/y")[0].sha256)
-
     def test_content_hash_ignores_part_order(self):
-        files = [{"name": "chunk=a/part-00000.avro", "sha256": "1"}, {"name": "chunk=b/part-00000.avro", "sha256": "2"}]
+        files = [{"name": "chunk=a/part-00000.parquet", "sha256": "1"}, {"name": "chunk=b/part-00000.parquet", "sha256": "2"}]
         self.assertEqual(content_sha256(files), content_sha256(files[::-1]))
         self.assertNotEqual(content_sha256(files), content_sha256([{**files[0], "sha256": "3"}, files[1]]))
 
@@ -100,7 +99,7 @@ class ChunkStateTests(unittest.TestCase):
 
     def test_uncommitted_chunk_is_reset(self):
         write_parts(self.chunk, 5)
-        (self.chunk / "part-00002.avro.tmp").write_bytes(b"partial")
+        (self.chunk / "part-00002.parquet.tmp").write_bytes(b"partial")
         self.assertIsNone(committed_chunk(self.chunk))
         self.assertEqual(reset_chunk(self.chunk), 3)
         self.assertEqual(list(self.chunk.iterdir()), [])
@@ -112,14 +111,14 @@ class ChunkStateTests(unittest.TestCase):
 
     def test_modified_committed_part_is_refused(self):
         self.commit()
-        with (self.chunk / "part-00000.avro").open("ab") as stream:
+        with (self.chunk / "part-00000.parquet").open("ab") as stream:
             stream.write(b"x")
         with self.assertRaisesRegex(StateError, "SHA-256 differs"):
             committed_chunk(self.chunk)
 
     def test_missing_or_extra_part_is_refused(self):
         self.commit()
-        (self.chunk / "part-00001.avro").unlink()
+        (self.chunk / "part-00001.parquet").unlink()
         with self.assertRaisesRegex(StateError, "differ from the marker"):
             committed_chunk(self.chunk)
 

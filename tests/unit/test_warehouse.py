@@ -35,7 +35,7 @@ SHA = "ab" * 32
 
 def spec(**overrides) -> LoadSpec:
     values = dict(export_id="2026-11-17", table="events", dataset="raw", rows=10, content_sha256=SHA,
-                  sources=(Source("gs://b/raw/events/export_id=2026-11-17/chunk=a/part-00000.avro", 5),),
+                  sources=(Source("gs://b/raw/events/export_id=2026-11-17/chunk=a/part-00000.parquet", 5),),
                   schema=({"name": "_id", "type": "STRING", "mode": "REQUIRED"},
                           {"name": "time_stamp", "type": "TIMESTAMP", "mode": "REQUIRED"},
                           {"name": "collection", "type": "STRING", "mode": "REQUIRED"}),
@@ -141,6 +141,7 @@ class FakeBigQuery:
         if job_id in self.jobs:
             raise Conflict(job_id)
         assert location == "asia-southeast1" and job_config.write_disposition == "WRITE_TRUNCATE_DATA"
+        assert job_config.source_format == "PARQUET" and job_config.parquet_options.enable_list_inference
         self.destination = destination
         self.submitted.append((job_id, list(uris)))
         self.jobs[job_id] = FakeJob(self, job_id, self.outcomes.get(job_id, "ok"))
@@ -151,10 +152,10 @@ class FakeBigQuery:
 
 
 def build_products_export(root: Path) -> Path:
-    """A finished ``products`` export as export-avro leaves it (part bytes are placeholders)."""
+    """A finished ``products`` export as export-raw leaves it (part bytes are placeholders)."""
     table = root / "products"
     files = []
-    for chunk_part, payload in (("chunk=all/part-00000.avro", b"first part"), ("chunk=all/part-00001.avro", b"2nd")):
+    for chunk_part, payload in (("chunk=all/part-00000.parquet", b"first part"), ("chunk=all/part-00001.parquet", b"2nd")):
         path = table / chunk_part
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(payload)
@@ -163,7 +164,6 @@ def build_products_export(root: Path) -> Path:
     (table / "chunk=all" / "_SUCCESS.json").write_text("{}")
     (table / "_export.json").write_text("{}")
     (table / ".lock").write_text("")
-    (table / "products.avsc").write_text("{}")
     (table / "products.bq.json").write_text(schema_json(bigquery_schema(PRODUCTS)))
     manifest = {"table": "products", "export_id": "x-1", "status": "complete", "rows": 4, "files": files,
                 "content_sha256": content_sha256(files)}
@@ -184,7 +184,7 @@ class LoadSpecTests(unittest.TestCase):
 
     def test_invalid_specs_are_refused(self):
         cases = [dict(dataset="raw-x"), dict(rows=-1), dict(content_sha256="x"), dict(sources=()),
-                 dict(sources=(Source("/tmp/a.avro", 1),)), dict(partition_by="missing")]
+                 dict(sources=(Source("/tmp/a.parquet", 1),)), dict(partition_by="missing")]
         for overrides in cases:
             with self.subTest(overrides), self.assertRaises(LoadSpecError):
                 spec(**overrides)
@@ -209,23 +209,23 @@ class PublishTests(unittest.TestCase):
         result = self.publish()
         base = "raw/products/export_id=x-1"
         self.assertEqual(set(self.bucket.objects), {
-            f"{base}/chunk=all/part-00000.avro", f"{base}/chunk=all/part-00001.avro", f"{base}/products.avsc",
+            f"{base}/chunk=all/part-00000.parquet", f"{base}/chunk=all/part-00001.parquet",
             f"{base}/products.bq.json", f"{base}/{MANIFEST}", f"{base}/{LOAD_SPEC}"})
         self.assertEqual(self.bucket.order[-2:], [f"{base}/{MANIFEST}", f"{base}/{LOAD_SPEC}"])
-        self.assertEqual((result.uploaded, result.skipped), (6, 0))
+        self.assertEqual((result.uploaded, result.skipped), (5, 0))
         loaded = LoadSpec.from_json(self.bucket.objects[f"{base}/{LOAD_SPEC}"].decode())
         self.assertEqual(loaded.rows, 4)
         self.assertEqual([s.uri for s in loaded.sources],
-                         [f"gs://bkt/{base}/chunk=all/part-00000.avro", f"gs://bkt/{base}/chunk=all/part-00001.avro"])
+                         [f"gs://bkt/{base}/chunk=all/part-00000.parquet", f"gs://bkt/{base}/chunk=all/part-00001.parquet"])
         self.assertEqual((loaded.partition_by, loaded.cluster_by), (None, ()))
 
     def test_rerun_skips_everything_already_uploaded(self):
         self.publish()
         result = self.publish()
-        self.assertEqual((result.uploaded, result.skipped, result.bytes_uploaded), (0, 6, 0))
+        self.assertEqual((result.uploaded, result.skipped, result.bytes_uploaded), (0, 5, 0))
 
     def test_existing_object_with_other_content_stops_the_publish(self):
-        self.bucket.objects["raw/products/export_id=x-1/chunk=all/part-00001.avro"] = b"other"
+        self.bucket.objects["raw/products/export_id=x-1/chunk=all/part-00001.parquet"] = b"other"
         with self.assertRaisesRegex(PublishError, "exists with other content"):
             self.publish()
         self.assertFalse(any(name.endswith(LOAD_SPEC) for name in self.bucket.objects))
@@ -245,7 +245,7 @@ class BigQueryLoadTests(unittest.TestCase):
     def setUp(self):
         self.spec = spec()
         self.bucket = FakeBucket("b")
-        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.avro"] = b"12345"
+        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.parquet"] = b"12345"
         self.gcs = FakeGcs(self.bucket)
 
     def test_first_load_creates_the_partitioned_table_and_checks_rows(self):
@@ -277,7 +277,7 @@ class BigQueryLoadTests(unittest.TestCase):
 
     def test_missing_or_resized_source_stops_before_any_job(self):
         bq = FakeBigQuery()
-        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.avro"] = b"1234"
+        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.parquet"] = b"1234"
         with self.assertRaisesRegex(LoadError, "4 bytes, the export wrote 5"):
             load(self.spec, bq, self.gcs)
         self.bucket.objects.clear()
@@ -304,13 +304,13 @@ class BigQueryLoadTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.bucket = FakeBucket("b")
-        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.avro"] = b"12345"
+        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.parquet"] = b"12345"
         self.name = f"raw/events/export_id=2026-11-17/{LOAD_SPEC}"
         self.bucket.objects[self.name] = spec().to_json().encode()
         self.gcs = FakeGcs(self.bucket)
 
     def test_only_load_specs_are_processed(self):
-        outcome = process_load_spec(self.gcs, None, "b", "raw/events/export_id=2026-11-17/chunk=a/part-00000.avro")
+        outcome = process_load_spec(self.gcs, None, "b", "raw/events/export_id=2026-11-17/chunk=a/part-00000.parquet")
         self.assertEqual(outcome.status, "ignored")
 
     def test_marker_is_written_and_stops_repeats(self):
@@ -338,7 +338,7 @@ class FunctionTests(unittest.TestCase):
 
     def setUp(self):
         self.bucket = FakeBucket("b")
-        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.avro"] = b"12345"
+        self.bucket.objects["raw/events/export_id=2026-11-17/chunk=a/part-00000.parquet"] = b"12345"
         self.name = f"raw/events/export_id=2026-11-17/{LOAD_SPEC}"
         self.bucket.objects[self.name] = spec().to_json().encode()
         self.env = {"ALLOWED_DATASETS": "raw, raw_sample"}
@@ -351,7 +351,7 @@ class FunctionTests(unittest.TestCase):
         return outcome, [json.loads(line) for line in logs.getvalue().splitlines()]
 
     def test_parts_and_other_objects_are_ignored_without_clients(self):
-        outcome = handle({"bucket": "b", "name": "raw/events/export_id=x/chunk=a/part-00000.avro"}, env={})
+        outcome = handle({"bucket": "b", "name": "raw/events/export_id=x/chunk=a/part-00000.parquet"}, env={})
         self.assertEqual(outcome.status, "ignored")
 
     def test_load_spec_is_loaded_and_logged(self):
@@ -385,10 +385,14 @@ class FunctionTests(unittest.TestCase):
                 shutil.copy(self.ROOT / f"src/glamira_pipeline/warehouse/{module}.py", package)
             shutil.copy(self.ROOT / "functions/bigquery_loader/main.py", tmp)
             check = ("import sys; sys.path.insert(0, '.'); import main; "
-                     "bad = [m for m in sys.modules if m.startswith(('glamira_pipeline.export', 'pymongo', 'fastavro'))]; "
+                     "bad = [m for m in sys.modules if m.startswith(('glamira_pipeline.export', 'pymongo'))]; "
                      "assert main.handle.__module__ == 'glamira_pipeline.warehouse.function', main.handle; "
                      "assert not bad, bad")
             subprocess.run([sys.executable, "-W", "ignore", "-c", check], cwd=tmp, check=True)
+            # The function loads Parquet server side; it never needs pyarrow (google-cloud-bigquery imports it
+            # opportunistically when installed, so check the shipped sources instead of sys.modules).
+            for module in modules:
+                self.assertNotIn("pyarrow", (package / f"{module}.py").read_text())
 
 
 if __name__ == "__main__":

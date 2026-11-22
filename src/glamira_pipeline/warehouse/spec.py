@@ -24,7 +24,7 @@ class LoadSpecError(ValueError):
 
 @dataclass(frozen=True)
 class Source:
-    """One Avro part to load: its ``gs://`` URI and its size from the export manifest."""
+    """One Parquet part to load: its ``gs://`` URI and its size from the export manifest."""
 
     uri: str
     bytes: int

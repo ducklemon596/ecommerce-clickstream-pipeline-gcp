@@ -49,10 +49,16 @@ class LoadResult:
 
 
 def job_config() -> bigquery.LoadJobConfig:
-    """Avro with logical types (TIMESTAMP, NUMERIC), replacing the table's rows atomically."""
+    """Parquet into the contract table, replacing its rows atomically.
+
+    List inference maps Parquet LIST columns to REPEATED fields (without it,
+    they arrive as ``list.element`` records); decimal128(38, 9) loads as NUMERIC.
+    """
+    parquet_options = bigquery.ParquetOptions()
+    parquet_options.enable_list_inference = True
     return bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.AVRO,
-        use_avro_logical_types=True,
+        source_format=bigquery.SourceFormat.PARQUET,
+        parquet_options=parquet_options,
         decimal_target_types=["NUMERIC"],
         write_disposition="WRITE_TRUNCATE_DATA",
     )

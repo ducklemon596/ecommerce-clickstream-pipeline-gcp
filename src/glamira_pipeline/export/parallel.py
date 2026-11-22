@@ -1,6 +1,6 @@
 """Run chunk exports in worker processes.
 
-Conversion and Avro encoding are CPU-bound Python, so threads would share one
+Conversion and Parquet encoding are CPU-bound, so threads would share one
 core; processes do not. Each worker opens its own ``MongoClient`` (a client
 must not cross a fork, so workers are spawned) and exports whole chunks with
 the same commit protocol as a single-process run. The parent only schedules

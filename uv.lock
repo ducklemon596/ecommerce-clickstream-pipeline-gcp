@@ -624,19 +624,19 @@ name = "glamira-pipeline"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastavro", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "fastavro", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-storage" },
     { name = "ip2location" },
+    { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pyarrow", version = "26.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pymongo", version = "4.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pymongo", version = "4.19.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
 [package.dev-dependencies]
 bench = [
-    { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "pyarrow", version = "26.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "fastavro", version = "1.12.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "fastavro", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 dev = [
     { name = "functions-framework" },
@@ -644,15 +644,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastavro", specifier = ">=1.12.2" },
     { name = "google-cloud-bigquery", specifier = ">=3.47.0" },
     { name = "google-cloud-storage", specifier = ">=3.17.1" },
     { name = "ip2location", specifier = ">=8.11.0" },
+    { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pymongo", specifier = ">=4.18.3" },
 ]
 
 [package.metadata.requires-dev]
-bench = [{ name = "pyarrow", specifier = ">=25.0.1" }]
+bench = [{ name = "fastavro", specifier = ">=1.12.2" }]
 dev = [{ name = "functions-framework", specifier = ">=3.10.2" }]
 
 [[package]]

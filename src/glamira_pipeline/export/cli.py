@@ -1,4 +1,4 @@
-"""CLIs: ``export-avro`` (MongoDB → Avro parts), ``verify-export`` (check a finished export) and
+"""CLIs: ``export-raw`` (MongoDB → Parquet parts), ``verify-export`` (check a finished export) and
 ``write-raw-schemas`` (committed schema files)."""
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class _StopFlag:
 
 
 def export_main() -> None:
-    """Export raw-layer tables from MongoDB into Avro files ready for GCS and BigQuery.
+    """Export raw-layer tables from MongoDB into Parquet files ready for GCS and BigQuery.
 
     Rerunning the same command resumes the export: committed chunks are
     verified and skipped, and only uncommitted work is redone.
@@ -97,8 +97,8 @@ def verify_main() -> None:
     parser.add_argument("directory", type=Path,
                         help="a table export directory, or an export directory holding several tables")
     parser.add_argument("--full", action="store_true",
-                        help="also decode every record (slow; to test the Avro library, e.g. after an upgrade)")
-    parser.add_argument("--schema-dir", type=Path, default=SCHEMA_DIR, help="committed Avro schemas")
+                        help="also decode every row (slow; to test the Parquet library, e.g. after an upgrade)")
+    parser.add_argument("--schema-dir", type=Path, default=SCHEMA_DIR, help="committed BigQuery schemas (schemas/raw)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
@@ -110,10 +110,10 @@ def verify_main() -> None:
 
 
 def schemas_main() -> None:
-    """Write the Avro and BigQuery schema of every raw table (default: schemas/raw)."""
+    """Write the BigQuery schema of every raw table (default: schemas/raw); the Parquet schema derives from it."""
     parser = argparse.ArgumentParser(description=schemas_main.__doc__)
     parser.add_argument("--output-dir", type=Path, default=SCHEMA_DIR)
     args = parser.parse_args()
     for table in TABLES.values():
         write_schema_files(table, args.output_dir)
-    sys.stdout.write(f"wrote {len(TABLES) * 2} schema files to {args.output_dir}\n")
+    sys.stdout.write(f"wrote {len(TABLES)} schema files to {args.output_dir}\n")

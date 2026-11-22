@@ -16,7 +16,7 @@ SCHEMA_TEXT = schema_json(BQ_SCHEMA)
 
 
 def build_export(root: Path) -> Path:
-    """A finished two-chunk export of table ``t`` (7 rows), as export-avro would leave it."""
+    """A finished two-chunk export of table ``t`` (7 rows), as export-raw would leave it."""
     table = root / "t"
     files, chunks = [], []
     for chunk, rows in (("2020-04-01", 4), ("2020-04-02", 3)):

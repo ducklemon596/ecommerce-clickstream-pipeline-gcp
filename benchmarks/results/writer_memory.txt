@@ -1,5 +1,0 @@
-avro_deflate 56716 KB
-avro_null 56312 KB
-jsonl 56188 KB
-jsonl_gzip 56684 KB
-parquet 326744 KB

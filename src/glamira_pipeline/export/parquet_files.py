@@ -65,6 +65,16 @@ class _HashingFile:
         self.closed = True
 
 
+@dataclass
+class _OpenPart:
+    """The part being written: its temporary file, the hashing sink pyarrow writes to, and pyarrow's writer."""
+
+    tmp_path: Path
+    stream: BinaryIO
+    sink: _HashingFile
+    writer: pq.ParquetWriter
+
+
 class ParquetPartWriter:
     """Append rows to ``<directory>/part-NNNNN.parquet``, starting a new part every ``rows_per_file`` rows."""
 
@@ -77,14 +87,12 @@ class ParquetPartWriter:
         self.rows_per_file = rows_per_file
         self.row_group_rows = min(row_group_rows, rows_per_file)
         self.parts: list[PartFile] = []
-        self._stream: BinaryIO | None = None
-        self._hashing: _HashingFile | None = None
-        self._writer: pq.ParquetWriter | None = None
+        self._part: _OpenPart | None = None  # opened by the first row group of a part
         self._buffer: list[dict] = []
-        self._rows = 0  # rows of the open part, written or buffered
+        self._rows = 0  # rows of the current part, written or buffered
 
     def write(self, row: dict) -> None:
-        """Add one row; raises (pyarrow's ArrowInvalid/ArrowTypeError) when a buffered row does not fit the schema."""
+        """Add one row; pyarrow raises ArrowInvalid/ArrowTypeError when a buffered row does not fit the schema."""
         self._buffer.append(row)
         self._rows += 1
         if len(self._buffer) >= self.row_group_rows:
@@ -93,54 +101,51 @@ class ParquetPartWriter:
             self._close_part()
 
     def close(self) -> list[PartFile]:
-        """Finish the open part (if any) and return every finished part."""
+        """Finish the current part (if any) and return every finished part."""
         if self._rows:
             self._close_part()
         return self.parts
 
     def abort(self) -> None:
-        """Discard the open part; finished parts stay on disk."""
-        if self._writer is not None:
-            try:
-                self._writer.close()  # release pyarrow's writer; the footer goes to the file deleted below
-            except (pa.ArrowException, OSError, ValueError):
-                pass
-        if self._stream is not None:
-            self._stream.close()
-        self._tmp_path().unlink(missing_ok=True)
-        self._stream = self._hashing = self._writer = None
-        self._buffer = []
-        self._rows = 0
-
-    def _name(self) -> str:
-        return f"part-{len(self.parts):05d}.parquet"
-
-    def _tmp_path(self) -> Path:
-        return self.directory / (self._name() + ".tmp")
+        """Discard the current part; finished parts stay on disk."""
+        part, self._part = self._part, None
+        self._buffer, self._rows = [], 0
+        if part is None:
+            return
+        try:
+            part.writer.close()  # releases pyarrow's writer; its footer goes to the file deleted below
+        except (pa.ArrowException, OSError, ValueError):
+            pass
+        part.stream.close()
+        part.tmp_path.unlink(missing_ok=True)
 
     def _flush_row_group(self) -> None:
         if not self._buffer:
             return
-        table = pa.Table.from_pylist(self._buffer, schema=self.schema)
-        if self._writer is None:
-            self._stream = self._tmp_path().open("xb")
-            self._hashing = _HashingFile(self._stream)
-            self._writer = pq.ParquetWriter(self._hashing, self.schema, compression=COMPRESSION,
-                                            version=FORMAT_VERSION)
-        self._writer.write_table(table, row_group_size=self.row_group_rows)
+        table = pa.Table.from_pylist(self._buffer, schema=self.schema)  # type check happens here
+        if self._part is None:
+            self._part = self._open_part()
+        self._part.writer.write_table(table, row_group_size=self.row_group_rows)
         self._buffer = []
+
+    def _open_part(self) -> _OpenPart:
+        tmp_path = self.directory / f"part-{len(self.parts):05d}.parquet.tmp"
+        stream = tmp_path.open("xb")
+        sink = _HashingFile(stream)
+        writer = pq.ParquetWriter(sink, self.schema, compression=COMPRESSION, version=FORMAT_VERSION)
+        return _OpenPart(tmp_path, stream, sink, writer)
 
     def _close_part(self) -> None:
         self._flush_row_group()
-        assert self._writer is not None and self._stream is not None and self._hashing is not None
-        self._writer.close()  # writes the footer
-        self._stream.flush()
-        os.fsync(self._stream.fileno())
-        self._stream.close()
-        name = self._name()
-        os.replace(self._tmp_path(), self.directory / name)
-        self.parts.append(PartFile(name, self._rows, self._hashing.size, self._hashing.sha256.hexdigest()))
-        self._stream = self._hashing = self._writer = None
+        part, self._part = self._part, None
+        assert part is not None, "a part with rows always has an open file"
+        part.writer.close()  # writes the footer
+        part.stream.flush()
+        os.fsync(part.stream.fileno())
+        part.stream.close()
+        name = part.tmp_path.name.removesuffix(".tmp")
+        os.replace(part.tmp_path, self.directory / name)
+        self.parts.append(PartFile(name, self._rows, part.sink.size, part.sink.sha256.hexdigest()))
         self._rows = 0
 
 

@@ -1,6 +1,6 @@
 # Decision record: retry-safe, idempotent raw export
 
-**Status:** accepted. The export (`export-avro`, `verify-export`) was implemented on 2026-11-17. The GCS upload and the BigQuery load (`publish-export`, the `bigquery-loader` Cloud Function, `load-bigquery`; section 7) were implemented on 2026-11-18.
+**Status:** accepted. The export (`export-raw`, `verify-export`) was implemented on 2026-11-17 and switched from Avro to Parquet parts on 2026-11-22 ([format benchmark](../../benchmarks/README.md)); the protocol below is unchanged by the format. The GCS upload and the BigQuery load (`publish-export`, the `bigquery-loader` Cloud Function, `load-bigquery`; section 7) were implemented on 2026-11-18.
 **Scope:** the export of the four raw tables in the [raw layer contract](../raw_layer_contract.md), their upload to GCS, and their load into BigQuery.
 
 ## Context
@@ -9,7 +9,7 @@ The export reads 45.6 M documents, 41.4 M of them events, and runs for about an 
 - a crash, an SSH drop or a transient MongoDB error late in `events`;
 - an upload retry or a BigQuery load retry.
 
-Two sources of variation would otherwise make outputs differ: MongoDB's natural order is not stable, and fastavro writes random sync markers.
+Two things could make outputs differ between runs: MongoDB's natural order is not stable, and file writers may embed run-specific metadata.
 
 The design goals are:
 
@@ -44,10 +44,10 @@ flowchart LR
   - the table;
   - the source namespace, collection UUID and per-chunk document counts;
   - the chunk plan;
-  - the SHA-256 of the Avro schema;
+  - the SHA-256 of the committed BigQuery schema, from which the Parquet schema derives;
   - the PII key fingerprint;
   - the codec and `rows_per_file`;
-  - the fastavro and zlib versions.
+  - the Parquet format version, compression, row-group size and the pyarrow version.
 - **Resume.** A rerun with the same identity resumes; a different identity is refused with the differing keys named. Context such as the start time, git SHA and server address is recorded but not compared, so a resume through another tunnel port works.
 - **Concurrent runs.** A non-blocking `flock` on the table directory refuses a second process.
 - **Worker count.** `--workers` is not part of the identity, because the output does not depend on it.
@@ -85,10 +85,10 @@ When every chunk is committed, `_manifest.json` is written. It records `content_
 
 The same inputs always give the same bytes, from any process and with any worker count, because of three choices:
 - rows within a chunk are sorted by `_id`;
-- each part's sync marker is `SHA-256("<table>/<chunk>/<part>")[:16]`;
-- the file header embeds the schema exactly as declared.
+- row groups always break at the same row counts (50,000 rows; a new part every 1,000,000);
+- the Parquet footer holds only the writer version and the Arrow schema, with no timestamp or random field.
 
-**Why the third rule exists.** fastavro writes `json.dumps(schema)` into the header. A schema it has *parsed* has a key order that depends on Python's per-process hash seed, so worker processes would write different headers for equal rows. A unit test writes headers under four `PYTHONHASHSEED` values and requires one hash.
+**How this is checked.** A unit test writes the same rows in four processes with different `PYTHONHASHSEED` values and requires one SHA-256. The integration tests require a 2-worker export to equal a single-process one byte for byte, and an interrupted run to resume to the same `content_sha256`. The earlier Avro writer needed a seeded sync marker and an unparsed schema in its header to get the same guarantee.
 
 **What this makes possible:**
 - a chunk can be compared to a committed one by hash alone;
@@ -133,7 +133,7 @@ The upload and the load are built in the [warehouse package](../../src/glamira_p
   - Eventarc delivers at least once, so every step below must be safe to repeat.
 - **Load:**
   - **Job ID:** `load_<dataset>_<table>_<export-id>_<first 12 hex of content_sha256>`. A redelivery gets `409`, reads that job and waits for it. A job that failed with a transient reason is retried under `_r<n>`.
-  - **Write disposition:** `WRITE_TRUNCATE_DATA` into the table created from the contract. It replaces the rows atomically and keeps the table's partitioning, clustering, modes and descriptions. `WRITE_TRUNCATE` would take the schema from the Avro files.
+  - **Write disposition:** `WRITE_TRUNCATE_DATA` into the table created from the contract. It replaces the rows atomically and keeps the table's partitioning, clustering, modes and descriptions. `WRITE_TRUNCATE` would take the schema from the files.
   - **Sources:** the URIs listed in the spec, never a wildcard, so stray objects are never loaded. Each must exist with its recorded size.
 - **After the load:** the table's row count must equal the spec. Only then is **`_LOADED.json`** written, so a later delivery stops before calling BigQuery.
 - **Error classes:**
@@ -171,12 +171,12 @@ The upload and the load are built in the [warehouse package](../../src/glamira_p
 | Chunks by `time_stamp` | Needs a new index on 41 M documents; `_id` ranges are free |
 | Chunks of a fixed document count | Boundaries would depend on read order; day ranges are fixed by the data |
 | Threads instead of processes | Conversion is CPU-bound Python and would share one core |
-| Decoding every part again inside the export | About 21 min per full run. The SHA-256 is computed while writing, and `verify-export` checks it in 53 s; decoding stays available as `--full` |
+| Decoding every part again inside the export | About 21 min per full run. The SHA-256 is computed while writing, and `verify-export` checks it and every Parquet footer in about a minute; decoding stays available as `--full` |
 | Append loads plus dbt deduplication, or `MERGE` on `_id` | Moves duplicates downstream, or scans the whole target on every load; the export is a full snapshot |
 
 ## Consequences and limits
 
-- **Library versions.** Byte identity holds only for the same fastavro and zlib versions, which is why they are part of the identity.
+- **Library versions.** Byte identity holds only for the same pyarrow version and writer settings, which is why they are part of the identity.
 - **Converter code is not part of the identity.** The identity covers the schema hash but not the conversion code. Resuming after a converter change would mix old and new chunks, so **start a new export ID after any change to `export/`**.
 - **Parallel efficiency.** Three workers made `events` 2.06× faster, not 3×. On 4 shared vCPUs that `mongod` also uses, each worker ran about 30% slower. More speed needs more cores, or less Python work per row: convert is about 50% of the work.
 
@@ -186,7 +186,7 @@ The upload and the load are built in the [warehouse package](../../src/glamira_p
 | --- | --- |
 | [`export/chunks.py`](../../src/glamira_pipeline/export/chunks.py) | Day chunks of `_id`, per-chunk counts, coverage check |
 | [`export/state.py`](../../src/glamira_pipeline/export/state.py) | Identity, chunk markers, verify-before-skip, reset of uncommitted chunks, `flock` |
-| [`export/avro_files.py`](../../src/glamira_pipeline/export/avro_files.py) | Part files with deterministic sync markers and headers, SHA-256 while writing |
+| [`export/parquet_files.py`](../../src/glamira_pipeline/export/parquet_files.py) | Parquet parts in fixed row groups, deterministic bytes, SHA-256 while writing |
 | [`export/exporter.py`](../../src/glamira_pipeline/export/exporter.py) | Table export, chunk retries, manifest |
 | [`export/parallel.py`](../../src/glamira_pipeline/export/parallel.py) | Worker processes and coordinated stop |
 | [`export/verify.py`](../../src/glamira_pipeline/export/verify.py) | `verify-export` |

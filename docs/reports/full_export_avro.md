@@ -1,5 +1,7 @@
 # Full Avro export: measured result
 
+> **Format note.** These runs used the Avro writer, the raw-layer format until 2026-11-22. The export now writes Parquet ([format benchmark](../../benchmarks/README.md)); the chunking, workers, commit protocol and verification measured here are unchanged, and this report will be replaced by the full Parquet run.
+
 **Observed:** 2026-11-17 on the project VM.
 **Outcome:** with `--workers 3`, the four raw tables were exported in **52 min 46 s** and verified in **53 s**:
 - 45,614,951 rows, 9.30 GB;

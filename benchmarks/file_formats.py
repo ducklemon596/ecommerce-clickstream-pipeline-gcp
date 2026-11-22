@@ -1,12 +1,13 @@
 """Compare file formats for the raw-layer hop GCS → BigQuery: storage, write time, load time, schema behaviour.
 
-The same rows are written in every format, decoded once from the verified Avro export:
+The same rows are written in every format, decoded once from a verified export (Parquet, or Avro for
+exports made before 2026-11-22):
 
-    avro_deflate   the production format (fastavro, deflate)
+    avro_deflate   Avro with deflate (the format before 2026-11-22)
     avro_null      Avro without compression, to separate format from compression
     jsonl          newline-delimited JSON, uncompressed
     jsonl_gzip     the same, gzip level 6
-    parquet        Parquet with Snappy (pyarrow), for comparison
+    parquet        Parquet with Snappy (pyarrow), the production format
 
 Subcommands (see benchmarks/README.md for the full procedure):
 
@@ -37,6 +38,8 @@ from fastavro import reader as avro_reader
 from fastavro import writer as avro_write_block
 from fastavro.write import Writer as AvroWriter
 
+from glamira_pipeline.export.schema import parquet_schema
+
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS = ROOT / "schemas" / "raw"
 FORMATS = ("avro_deflate", "avro_null", "jsonl", "jsonl_gzip", "parquet")
@@ -60,24 +63,42 @@ def json_line(row: dict) -> bytes:
     return (json.dumps(row, ensure_ascii=False, separators=(",", ":"), default=_json_default) + "\n").encode()
 
 
-def arrow_schema(bq_fields: list[dict]):
-    """pyarrow schema equivalent to a BigQuery JSON schema (REQUIRED → not nullable, REPEATED → list)."""
-    import pyarrow as pa
+def avro_schema(bq_fields: list[dict]) -> dict:
+    """An Avro schema equivalent to a BigQuery JSON schema (Avro is only a benchmark format now)."""
+    scalar = {"STRING": "string", "INTEGER": "long", "BOOLEAN": "boolean",
+              "NUMERIC": {"type": "bytes", "logicalType": "decimal", "precision": 38, "scale": 9},
+              "TIMESTAMP": {"type": "long", "logicalType": "timestamp-micros"}}
 
-    scalar = {"STRING": pa.string(), "INTEGER": pa.int64(), "BOOLEAN": pa.bool_(),
-              "NUMERIC": pa.decimal128(38, 9), "TIMESTAMP": pa.timestamp("us", tz="UTC")}
+    def fields(specs: list[dict], path: str) -> list[dict]:
+        out = []
+        for spec in specs:
+            if spec["type"] == "RECORD":
+                name = "".join(part.capitalize() for part in f"{path}_{spec['name']}".split("_") if part)
+                kind = {"type": "record", "name": name, "fields": fields(spec["fields"], f"{path}_{spec['name']}")}
+            else:
+                kind = scalar[spec["type"]]
+            mode = spec.get("mode", "NULLABLE")
+            if mode == "REPEATED":
+                out.append({"name": spec["name"], "type": {"type": "array", "items": kind}, "default": []})
+            elif mode == "NULLABLE":
+                out.append({"name": spec["name"], "type": ["null", kind], "default": None})
+            else:
+                out.append({"name": spec["name"], "type": kind})
+        return out
 
-    def field(spec: dict):
-        if spec["type"] == "RECORD":
-            kind = pa.struct([field(child) for child in spec["fields"]])
-        else:
-            kind = scalar[spec["type"]]
-        mode = spec.get("mode", "NULLABLE")
-        if mode == "REPEATED":
-            return pa.field(spec["name"], pa.list_(kind), nullable=False)
-        return pa.field(spec["name"], kind, nullable=mode != "REQUIRED")
+    return {"type": "record", "name": "Event", "namespace": "glamira.raw", "fields": fields(bq_fields, "")}
 
-    return pa.schema([field(spec) for spec in bq_fields])
+
+def read_rows(path: Path):
+    """Decoded rows of one exported part, Parquet (current exports) or Avro (exports before 2026-11-22)."""
+    if path.suffix == ".parquet":
+        import pyarrow.parquet as pq
+
+        for batch in pq.ParquetFile(path).iter_batches(batch_size=10_000):
+            yield from batch.to_pylist()
+    else:
+        with path.open("rb") as stream:
+            yield from avro_reader(stream)
 
 
 class FormatWriters:
@@ -162,26 +183,25 @@ def chunk_parts(table_dir: Path, chunks: list[str] | None) -> dict[str, list[Pat
 
 
 def convert(args) -> None:
-    avro_schema = json.loads((SCHEMAS / "events.avsc").read_text())
-    parquet_schema = arrow_schema(json.loads((SCHEMAS / "events.bq.json").read_text()))
+    bq_fields = json.loads((SCHEMAS / "events.bq.json").read_text())
+    avro, parquet = avro_schema(bq_fields), parquet_schema(bq_fields)
     formats = tuple(args.formats)
     parts = chunk_parts(args.export_table, args.chunks)
     totals = dict.fromkeys(formats, 0.0)
     rows, decode_seconds, started = 0, 0.0, clock()
     for chunk, paths in sorted(parts.items()):
-        writers = FormatWriters(args.out, chunk, avro_schema, parquet_schema, formats)
+        writers = FormatWriters(args.out, chunk, avro, parquet, formats)
         chunk_rows, t0 = 0, clock()
         for path in paths:
-            with path.open("rb") as stream:
-                records = iter(avro_reader(stream))
-                while True:
-                    d0 = clock()
-                    row = next(records, None)
-                    decode_seconds += clock() - d0
-                    if row is None:
-                        break
-                    writers.write(row)
-                    chunk_rows += 1
+            records = read_rows(path)
+            while True:
+                d0 = clock()
+                row = next(records, None)
+                decode_seconds += clock() - d0
+                if row is None:
+                    break
+                writers.write(row)
+                chunk_rows += 1
         writers.close()
         rows += chunk_rows
         for fmt in formats:
@@ -314,15 +334,14 @@ def bad_rows(row: dict) -> dict[str, dict]:
 
 
 def contract(args) -> None:
-    avro_schema = json.loads((SCHEMAS / "events.avsc").read_text())
-    parquet_schema = arrow_schema(json.loads((SCHEMAS / "events.bq.json").read_text()))
-    with args.sample.open("rb") as stream:
-        row = next(iter(avro_reader(stream)))
+    bq_fields = json.loads((SCHEMAS / "events.bq.json").read_text())
+    avro, parquet = avro_schema(bq_fields), parquet_schema(bq_fields)
+    row = next(read_rows(args.sample))
     result: dict = {"local_write": {}}
     for case, bad in bad_rows(row).items():  # where does each format notice the break?
         try:
             with open(os.devnull, "wb") as sink:
-                avro_write_block(sink, avro_schema, [bad], validator=True)
+                avro_write_block(sink, avro, [bad], validator=True)
             avro = "accepted"
         except Exception as exc:  # noqa: BLE001 - the error type is what is being reported
             avro = f"rejected at write: {type(exc).__name__}"
@@ -334,7 +353,7 @@ def contract(args) -> None:
         try:
             import pyarrow as pa
 
-            pa.Table.from_pylist([bad], schema=parquet_schema)
+            pa.Table.from_pylist([bad], schema=parquet)
             parquet = "accepted"
         except Exception as exc:  # noqa: BLE001
             parquet = f"rejected at write: {type(exc).__name__}"
@@ -462,7 +481,7 @@ def main() -> None:
     p.set_defaults(func=load)
 
     p = sub.add_parser("contract", help="where each format notices a contract break; schema without a contract")
-    p.add_argument("sample", type=Path, help="one Avro part of the export (a real row is taken from it)")
+    p.add_argument("sample", type=Path, help="one part of an export, Parquet or Avro (a real row is taken from it)")
     p.add_argument("--bucket", help="also run the BigQuery checks (needs the uploaded formats)")
     p.add_argument("--prefix", default="bench/formats")
     p.add_argument("--dataset", default="glamira_bench")

@@ -1,8 +1,10 @@
-# Why the raw layer ships as Avro: format benchmark
+# Why the raw layer ships as Parquet: format benchmark
 
-The raw layer reaches BigQuery as files in GCS (see the [raw layer contract](../docs/raw_layer_contract.md)). This page measures the candidate file formats on one week of the real events: 5,526,566 rows, 1.23 GB as Avro. It shows why **Avro (deflate)** was chosen over newline-delimited JSON (JSONL), the format most BigQuery pipelines start from.
+The raw layer reaches BigQuery as files in GCS (see the [raw layer contract](../docs/raw_layer_contract.md)). This page measures the candidate file formats on one week of the real events: 5,526,566 rows, 1.23 GB as Avro.
 
-Parquet was measured too, and it turns out to be the strongest alternative, so it gets a short section. CSV is ruled out at once: it cannot represent the nested `option`, `option_filter` and `cart_products` fields.
+The raw layer was first built on **Avro (deflate)**, chosen over newline-delimited JSON (JSONL) for its typed, self-describing files. This benchmark confirmed that choice against JSONL. It also showed that **Parquet** keeps every one of those properties while being smaller and faster, so the raw layer moved to Parquet on 2026-11-22.
+
+CSV is ruled out at once: it cannot represent the nested `option`, `option_filter` and `cart_products` fields.
 
 **Observed:** 2026-11-22.
 - **Writes:** on the project VM (e2-standard-4, 4 vCPU, one Python process, fastavro 1.12.2, pyarrow 25.0.1).
@@ -24,11 +26,11 @@ Parquet was measured too, and it turns out to be the strongest alternative, so i
 
 All five formats produced the same table: 5,526,566 rows and 3.23 GB in BigQuery. BigQuery stores data in its own columnar format whatever the input.
 
-**Against JSONL, Avro wins on every axis that matters for a raw layer.**
+**Typed formats beat JSONL on every axis that matters for a raw layer.**
 - Plain JSONL takes 6× the storage, needs 1.6× the BigQuery compute to load, carries no types, and its autodetected schema broke on this data.
 - Gzip fixes the size but makes the load 2.2× slower than Avro.
 
-**Against Parquet, Avro loses on efficiency** but fits the exporter's streaming, commit-per-part design (section 4).
+**Parquet beats Avro on every measurement except writer memory.** It is half the size, 3.7× faster to write, 1.9× faster to load and uses 30% fewer slots. Its one cost, about 330 MB per writer process, is affordable on the 16 GB VM (section 5).
 
 ## 1. Method
 
@@ -38,11 +40,11 @@ Every format holds **the same rows**. [`file_formats.py`](file_formats.py) `conv
 
 | Format | Writer | Notes |
 | --- | --- | --- |
-| `avro_deflate` | fastavro, deflate | The production format |
+| `avro_deflate` | fastavro, deflate | The raw-layer format until 2026-11-22 |
 | `avro_null` | fastavro, no compression | Separates the format from its compression |
 | `jsonl` | `json.dumps` per row | TIMESTAMP as `YYYY-MM-DD HH:MM:SS.ffffff UTC`, NUMERIC as a string |
 | `jsonl_gzip` | same, gzip level 6 | How JSONL is usually shipped |
-| `parquet` | pyarrow, Snappy, 50,000-row row groups | Schema derived from the BigQuery contract |
+| `parquet` | pyarrow, Snappy, 50,000-row row groups | The raw-layer format since 2026-11-22; schema derived from the BigQuery contract |
 
 - **Data:** the 7 daily chunks from 2020-05-11 to 2020-05-17 of the full export, giving 7 files per format.
 - **Peak memory:** measured with `/usr/bin/time -v` on one day per format, one writer at a time.
@@ -79,7 +81,7 @@ At this volume, storage is cheap in every format: about $0.20 per month for Avro
 
 - **Compression is the cost in Avro deflate's write time, not Avro itself.** Uncompressed Avro writes as fast as JSONL. Deflate adds 141 s and gzip 114 s on this machine.
 - **Parquet wrote 3.7× faster than Avro deflate.** pyarrow converts a whole batch of 50,000 rows in C++, while fastavro and `json.dumps` work row by row through Python. The common rule that columnar formats are slow to write does not hold here as a matter of CPU.
-- **What Parquet costs on the write side is memory and granularity.** A whole row group must be built in memory before it is written: 327 MB here, against 57 MB for any of the streaming writers. A Parquet file is only readable once its footer is written.
+- **What Parquet costs on the write side is memory.** A whole row group must be built in memory before it is written: 327 MB here, against 57 MB for any of the streaming writers. A Parquet file is also only readable once its footer is written; the exporter already writes every part as `.tmp` and renames it only after closing, so this changes nothing for the commit protocol.
 - **Upload time follows size.** The network moved about 300 MB/s within the region, so only plain JSONL's 7.3 GB is noticeable, at 23.5 s.
 
 ### Load time
@@ -123,31 +125,43 @@ Avro is self-describing. JSONL leaves BigQuery to guess from a sample, and the g
 
 ## 5. Decision
 
-**Avro over JSONL.** JSONL loses on every measurement this pipeline cares about:
+**Typed files, not JSONL.** JSONL loses on every measurement this pipeline cares about:
 - it has no types in the files;
 - autodetect failed on this data;
 - a quoted number is coerced silently;
 - type errors appear only at load time;
 - it takes 6× the storage uncompressed;
-- it loads 2.2× slower when gzipped.
+- it loads 2.2× slower than Avro, and 4.2× slower than Parquet, when gzipped.
 
-**Avro over Parquet.** This is a trade-off, not a sweep. Parquet measured better on size (0.48×), write CPU (3.7× faster), load time and slot time, and it also rejects type errors at write. Avro is kept for these reasons:
+**Parquet, not Avro** (switched on 2026-11-22). Both reject type errors as they write, and both carry their schema. Parquet then wins every efficiency measurement:
 
-- **It fits the exporter.**
-  - The exporter streams documents from a MongoDB cursor and writes and commits part files of up to 1 M rows.
-  - Every part is complete and valid the moment it is closed. That property is what the resume protocol relies on ([retry and idempotency](../docs/decisions/export_retry_idempotency.md)).
-  - Avro writes row by row in constant memory: 57 MB per process.
-  - Parquet needs a row group in memory (327 MB per process at 50,000 rows), and each file is readable only after its footer.
-- **BigQuery reads it natively.**
-  - Avro logical types map directly to TIMESTAMP and NUMERIC.
-  - Parquet's nested lists need `enable_list_inference` to load as REPEATED fields.
-- **The gap is small at this scale.** The full export writes for about 50 min across 3 workers, and convert, meaning the contract checks and HMAC, takes half of that whatever the format. The full load takes 29 s, and 9.3 GB of storage costs about $0.20 per month.
+| | Avro deflate | Parquet | Parquet vs Avro |
+| --- | ---: | ---: | ---: |
+| Size | 1.23 GB | 0.59 GB | 0.48× |
+| Write time on the VM | 377 s | 102 s | 3.7× faster |
+| BigQuery load time | 16.5 s | 8.8 s | 1.9× faster |
+| BigQuery slot time | 349 s | 243 s | 30% less |
+| Writer memory | 57 MB | 327 MB | 5.7× more |
 
-**When to revisit:** if export time or storage become a real constraint. Parquet is the measured alternative: it would cut write time and storage by about half, at the price of buffering a row group per worker.
+The arguments that first kept Avro do not hold up:
+
+- **"A Parquet file is valid only after its footer."** The exporter already writes each part as `.tmp`, fsyncs it and renames it only after closing, so a footer changes nothing for the commit protocol.
+- **"Parquet needs a row group in memory."** That costs about 330 MB per worker, or 1 GB for three workers on a 16 GB VM. The export already works in bounded batches.
+- **"Avro's logical types load natively."** Parquet needs one load option, `enable_list_inference`, to map its lists to REPEATED fields. The tables are created from the contract before every load, so no schema is ever inferred from the files.
+- **Determinism, which the resume protocol relies on, holds for Parquet too.** The footer holds only the writer version and the Arrow schema. The same rows give the same SHA-256 in four processes with different hash seeds, and a 2-worker export equals a single-process one byte for byte.
+
+**What the switch changed:**
+- The writer is now [`parquet_files.py`](../src/glamira_pipeline/export/parquet_files.py), with Snappy compression and 50,000-row row groups.
+- The Parquet schema is derived from the committed BigQuery schema, so `schemas/raw/` holds only `.bq.json` files.
+- `verify-export` checks every footer's schema and row count.
+- The BigQuery load uses `PARQUET` with list inference.
+- On the 100K sample, the export's write time fell from 2.5 s to 1.0 s and the files from 22.4 MB to 11.0 MB.
+
+**Still to measure:** the full re-export and load in Parquet (pending at the time of writing).
 
 ## 6. Reproduce
 
-**On the VM.** Check out this branch and mount the export as for the export run:
+**On the VM.** Check out this branch and mount the export as for the export run. `convert` reads a Parquet export, or an Avro export made before 2026-11-22; the results above were measured from the Avro export `full-2026-11-17-w3`:
 
 ```bash
 cd ~/xp/glamira-pipeline && uv sync --frozen --group bench
@@ -176,7 +190,7 @@ sudo umount ~/xp/out   # then stop the VM
 bq mk --location asia-southeast1 --dataset <project>:glamira_bench
 uv run --group bench python benchmarks/file_formats.py load --bucket <bucket> --results benchmarks/results/load_results.json
 uv run --group bench python benchmarks/file_formats.py contract \
-  data/exports/sample-100k/events/chunk=2020-06-04/part-00000.avro \
+  data/exports/sample-100k-parquet/events/chunk=2020-06-04/part-00000.parquet \
   --bucket <bucket> --results benchmarks/results/contract_results.json
 ```
 

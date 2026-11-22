@@ -18,7 +18,7 @@
 
 ## 1. Problem
 
-The export stage produces verified Avro files: 41.4 M events plus three enrichment tables. They must become BigQuery tables that analysts can trust, and the path must survive the usual cloud failures:
+The export stage produces verified files: 41.4 M events plus three enrichment tables. The load measured here used the Avro export of 2026-11-17; the raw layer has since moved to Parquet, which the loader now reads, and the full Parquet load is pending. They must become BigQuery tables that analysts can trust, and the path must survive the usual cloud failures:
 - an interrupted upload;
 - a duplicated or delayed event;
 - a load job that is slow or fails.
@@ -72,7 +72,7 @@ flowchart LR
 | **Event-driven load on `_load.json`** | Manual `bq load`; a scheduled job | A schedule can fire on a half-uploaded export, and a manual load is easy to forget or repeat. A completion marker turns "upload finished" into the trigger itself |
 | **A load spec written by the producer** | The function reads the repository or the manifest | The function stays small: Google Cloud clients only, no project code beyond the warehouse modules. It cannot drift from the contract version that produced the files |
 | **Deterministic job ID** | Random job IDs plus deduplication | BigQuery refuses a second job with the same ID, which makes retries and duplicated events safe without any state store |
-| **`WRITE_TRUNCATE_DATA`** | `WRITE_APPEND`; `WRITE_TRUNCATE`; `MERGE` | Append duplicates on any repeat. `WRITE_TRUNCATE` would replace the table's schema with the Avro one. `MERGE` scans the target. The export is a full snapshot, so an atomic replace is exact |
+| **`WRITE_TRUNCATE_DATA`** | `WRITE_APPEND`; `WRITE_TRUNCATE`; `MERGE` | Append duplicates on any repeat. `WRITE_TRUNCATE` would replace the table's schema with the one in the files. `MERGE` scans the target. The export is a full snapshot, so an atomic replace is exact |
 | **Retries through Eventarc** | Retry loops inside the function | Redelivery outlives a function timeout. Because of the 409 behaviour, a retry becomes a poll on the same job |
 | **Publish on the VM** | Download to a workstation first | The VM is in the bucket's region: no egress cost, and 9.13 GB uploaded in about 16 s |
 

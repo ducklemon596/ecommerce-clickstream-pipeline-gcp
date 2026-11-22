@@ -315,6 +315,7 @@ def bad_rows(row: dict) -> dict[str, dict]:
 
 def contract(args) -> None:
     avro_schema = json.loads((SCHEMAS / "events.avsc").read_text())
+    parquet_schema = arrow_schema(json.loads((SCHEMAS / "events.bq.json").read_text()))
     with args.sample.open("rb") as stream:
         row = next(iter(avro_reader(stream)))
     result: dict = {"local_write": {}}
@@ -330,7 +331,14 @@ def contract(args) -> None:
             jsonl = "accepted"
         except Exception as exc:  # noqa: BLE001
             jsonl = f"rejected at write: {type(exc).__name__}"
-        result["local_write"][case] = {"avro": avro, "jsonl": jsonl}
+        try:
+            import pyarrow as pa
+
+            pa.Table.from_pylist([bad], schema=parquet_schema)
+            parquet = "accepted"
+        except Exception as exc:  # noqa: BLE001
+            parquet = f"rejected at write: {type(exc).__name__}"
+        result["local_write"][case] = {"avro": avro, "parquet": parquet, "jsonl": jsonl}
     if args.bucket:
         result["bigquery"] = contract_bigquery(args, row)
     write_result(args.results, result)

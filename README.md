@@ -89,7 +89,7 @@ Each step started with measurement on a sample, chose the simplest option that t
 | Crawl checkpoint | Sorted-ID cursor, SQLite, the data itself | Concurrent workers finish out of order; a second store would drift from the data | **The written documents are the checkpoint**: crawl `input − finished` |
 | Storage target | Files during the crawl; MongoDB | MongoDB already hosts the source and provides upsert plus schema validation | **MongoDB now**; GCS/BigQuery export as a separate snapshot step |
 | `option` filter object | STRUCT; `ARRAY<STRUCT<key, value>>` | 10 keys in two fixed sets, one per event type | **STRUCT**: plain columns, and an unknown key fails the export |
-| Export format for GCS → BigQuery | JSONL; Avro | JSONL defers type errors to the BigQuery load and lets BigQuery coerce values implicitly. Avro checks every row against the schema when the file is written, and BigQuery reads compressed Avro in parallel | **Avro**, with one schema shared by Avro and the BigQuery raw table; [decision record](docs/decisions/raw_events_schema.md), [contract](docs/raw_layer_contract.md) |
+| Export format for GCS → BigQuery | JSONL; Avro | JSONL defers type errors to the BigQuery load and lets BigQuery coerce values implicitly. Avro checks every row against the schema when the file is written, and BigQuery reads compressed Avro in parallel | **Avro**, with one schema shared by Avro and the BigQuery raw table; [decision record](docs/decisions/raw_events_schema.md), [contract](docs/raw_layer_contract.md), [format benchmark](benchmarks/README.md): JSONL is 5.9× larger, its autodetected schema broke on this data, and gzip makes it load 2.2× slower; Parquet is smaller and faster but needs row groups in memory |
 | Triggering the BigQuery load | Manual `bq load`; a scheduled job; a Cloud Function on the upload | A schedule polls and can fire on a half-uploaded export; a manual load is easy to forget or repeat. The upload already writes a completion marker | **Cloud Function on `_load.json`**, written last by `publish-export`; a deterministic job ID and `_LOADED.json` make Eventarc's repeated deliveries harmless |
 | Personal data in BigQuery | Export as is; hash | Email, device ID, customer ID and IP are not needed in clear text for any business question; geolocation only needs a join key | **HMAC-SHA256** with a secret key of `email_address`, `device_id`, `user_id_db` and `ip`; `ip_locations` is keyed by the same IP hash, so the join still works |
 
@@ -218,6 +218,7 @@ docs/
 ├── runbooks/       # GCP setup and the BigQuery load, step by step
 ├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load)
 └── decisions/      # decision records
+benchmarks/         # file-format benchmark (Avro vs JSONL vs Parquet) and its results
 tests/unit/         # synthetic fixtures; no live services
 tests/integration/  # need a disposable local MongoDB
 ```

@@ -4,7 +4,7 @@
 
 ## Context
 
-- **What is being decided:** the export to GCS uses Avro (decided). The BigQuery raw table gets an explicit schema, and that schema must be identical to the one written into the Avro files.
+- **What is being decided:** the export to GCS uses Avro (decided; measured against JSONL and Parquet in the [format benchmark](../../benchmarks/README.md)). The BigQuery raw table gets an explicit schema, and that schema must be identical to the one written into the Avro files.
 - **Evidence:**
   - *Types and nullability:* the full-data [schema profile](../reports/schema_profile.md) (41,432,473 documents, 2026-11-14).
   - *Value-level facts:* one read-only `$facet` scan of `countly.summary` on 2026-11-16 (944 s). It checked timestamp range, integrality of `order_id`, bool values, string formats of IDs and positions, and the contents of `cart_products[].option`.

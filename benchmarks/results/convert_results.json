@@ -1,0 +1,55 @@
+{
+  "rows": 5526566,
+  "chunks": [
+    "2020-05-11",
+    "2020-05-12",
+    "2020-05-13",
+    "2020-05-14",
+    "2020-05-15",
+    "2020-05-16",
+    "2020-05-17"
+  ],
+  "decode_seconds": 223.2,
+  "wall_seconds": 1554.1,
+  "formats": {
+    "avro_deflate": {
+      "files": 7,
+      "bytes": 1228682549,
+      "write_seconds": 377.2,
+      "rows_per_second": 14651
+    },
+    "avro_null": {
+      "files": 7,
+      "bytes": 3320133889,
+      "write_seconds": 236.0,
+      "rows_per_second": 23421
+    },
+    "jsonl": {
+      "files": 7,
+      "bytes": 7299814656,
+      "write_seconds": 242.7,
+      "rows_per_second": 22767
+    },
+    "jsonl_gzip": {
+      "files": 7,
+      "bytes": 1054734241,
+      "write_seconds": 357.0,
+      "rows_per_second": 15480
+    },
+    "parquet": {
+      "files": 7,
+      "bytes": 591451725,
+      "write_seconds": 101.5,
+      "rows_per_second": 54426
+    }
+  },
+  "environment": {
+    "host": "glamira-mongodb",
+    "cpus": 4,
+    "python": "3.10.22",
+    "fastavro": "1.12.2",
+    "pyarrow": "25.0.1",
+    "measured_at": "2026-11-22T11:22:43+00:00"
+  },
+  "source_avro_bytes": 1228682549
+}

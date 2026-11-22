@@ -1,0 +1,23 @@
+	Command being timed: ".venv/bin/python benchmarks/file_formats.py convert /home/thienquang050906/xp/out/export/full-2026-11-17-w3/events --out /home/thienquang050906/xp/out/bench/formats --chunks 2020-05-11 2020-05-12 2020-05-13 2020-05-14 2020-05-15 2020-05-16 2020-05-17"
+	User time (seconds): 1515.24
+	System time (seconds): 38.71
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 25:54.75
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 332708
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 360
+	Minor (reclaiming a frame) page faults: 2448178
+	Voluntary context switches: 685
+	Involuntary context switches: 7082
+	Swaps: 0
+	File system inputs: 2516240
+	File system outputs: 26359088
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

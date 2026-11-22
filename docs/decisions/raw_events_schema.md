@@ -4,7 +4,7 @@
 
 ## Context
 
-- **What is being decided:** the BigQuery raw table gets an explicit schema, and the files carry exactly the same schema. The files are Parquet since 2026-11-22; they were Avro before, and the switch was decided by the [format benchmark](../../benchmarks/README.md). The schema rules below do not depend on the file format.
+- **What is being decided:** the BigQuery raw table gets an explicit schema, and the files carry exactly the same schema. The files are Parquet since 2026-11-22; they were Avro before, and the switch was decided by the [file-format decision](raw_file_format.md). The schema rules below do not depend on the file format.
 - **Evidence:**
   - *Types and nullability:* the full-data [schema profile](../reports/schema_profile.md) (41,432,473 documents, 2026-11-14).
   - *Value-level facts:* one read-only `$facet` scan of `countly.summary` on 2026-11-16 (944 s). It checked timestamp range, integrality of `order_id`, bool values, string formats of IDs and positions, and the contents of `cart_products[].option`.

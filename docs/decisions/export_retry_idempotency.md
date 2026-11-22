@@ -1,6 +1,6 @@
 # Decision record: retry-safe, idempotent raw export
 
-**Status:** accepted. The export (`export-raw`, `verify-export`) was implemented on 2026-11-17 and switched from Avro to Parquet parts on 2026-11-22 ([format benchmark](../../benchmarks/README.md)); the protocol below is unchanged by the format. The GCS upload and the BigQuery load (`publish-export`, the `bigquery-loader` Cloud Function, `load-bigquery`; section 7) were implemented on 2026-11-18.
+**Status:** accepted. The export (`export-raw`, `verify-export`) was implemented on 2026-11-17 and switched from Avro to Parquet parts on 2026-11-22 ([file-format decision](raw_file_format.md)); the protocol below is unchanged by the format. The GCS upload and the BigQuery load (`publish-export`, the `bigquery-loader` Cloud Function, `load-bigquery`; section 7) were implemented on 2026-11-18.
 **Scope:** the export of the four raw tables in the [raw layer contract](../raw_layer_contract.md), their upload to GCS, and their load into BigQuery.
 
 ## Context

@@ -9,7 +9,7 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - publishes the files to GCS, where a Cloud Function loads them into BigQuery;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. The exporter and the [raw layer contract](docs/raw_layer_contract.md) are built. The full data has been exported, published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. The raw files are Parquet, chosen over Avro and JSONL by a [format benchmark](benchmarks/README.md). dbt models and dashboards come next.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The exporter and the [raw layer contract](docs/raw_layer_contract.md) are built. The full data has been exported, published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. The raw files are Parquet, chosen over Avro and JSONL by a [file-format decision](docs/decisions/raw_file_format.md). dbt models and dashboards come next.
 
 ## Results at a glance
 
@@ -89,13 +89,14 @@ Each step started with measurement on a sample, chose the simplest option that t
 | Crawl checkpoint | Sorted-ID cursor, SQLite, the data itself | Concurrent workers finish out of order; a second store would drift from the data | **The written documents are the checkpoint**: crawl `input − finished` |
 | Storage target | Files during the crawl; MongoDB | MongoDB already hosts the source and provides upsert plus schema validation | **MongoDB now**; GCS/BigQuery export as a separate snapshot step |
 | `option` filter object | STRUCT; `ARRAY<STRUCT<key, value>>` | 10 keys in two fixed sets, one per event type | **STRUCT**: plain columns, and an unknown key fails the export |
-| Export format for GCS → BigQuery | JSONL; Avro; Parquet | Measured on one week of events ([format benchmark](benchmarks/README.md)). JSONL carries no types: autodetect broke on this data and a quoted number was coerced silently. Parquet was half the size of Avro deflate, 3.7× faster to write, faster to load, and rejects type errors at write like Avro | **Parquet** (Avro until 2026-11-22), with its schema derived from the BigQuery raw table's; [decision record](docs/decisions/raw_events_schema.md), [contract](docs/raw_layer_contract.md) |
+| Export format for GCS → BigQuery | JSONL; Avro; Parquet | Measured on one week of events ([file-format decision](docs/decisions/raw_file_format.md)). JSONL carries no types: autodetect broke on this data and a quoted number was coerced silently. Parquet was half the size of Avro deflate, 3.7× faster to write, faster to load, and rejects type errors at write like Avro | **Parquet** (Avro until 2026-11-22), with its schema derived from the BigQuery raw table's; [decision record](docs/decisions/raw_events_schema.md), [contract](docs/raw_layer_contract.md) |
 | Triggering the BigQuery load | Manual `bq load`; a scheduled job; a Cloud Function on the upload | A schedule polls and can fire on a half-uploaded export; a manual load is easy to forget or repeat. The upload already writes a completion marker | **Cloud Function on `_load.json`**, written last by `publish-export`; a deterministic job ID and `_LOADED.json` make Eventarc's repeated deliveries harmless |
 | Personal data in BigQuery | Export as is; hash | Email, device ID, customer ID and IP are not needed in clear text for any business question; geolocation only needs a join key | **HMAC-SHA256** with a secret key of `email_address`, `device_id`, `user_id_db` and `ip`; `ip_locations` is keyed by the same IP hash, so the join still works |
 
 Details and caveats:
 - [Product crawl decision record](docs/decisions/product_crawl.md)
 - [Raw events schema decision record](docs/decisions/raw_events_schema.md)
+- [Raw file format decision record](docs/decisions/raw_file_format.md): Parquet over Avro and JSONL, with measurements
 - [Retry-safe, idempotent export decision record](docs/decisions/export_retry_idempotency.md) (export, verification, GCS publish and the triggered BigQuery load)
 - [IP enrichment guide](src/glamira_pipeline/ip_location/README.md#why-counter-replaces-sqlite)
 
@@ -218,7 +219,6 @@ docs/
 ├── runbooks/       # GCP setup and the BigQuery load, step by step
 ├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load)
 └── decisions/      # decision records
-benchmarks/         # file-format benchmark (Avro vs JSONL vs Parquet) and its results
 tests/unit/         # synthetic fixtures; no live services
 tests/integration/  # need a disposable local MongoDB
 ```

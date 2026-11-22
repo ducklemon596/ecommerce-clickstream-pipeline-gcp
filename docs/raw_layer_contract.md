@@ -1,6 +1,6 @@
 # Raw layer data contract: Parquet files and BigQuery tables
 
-**Status:** in force from 2026-11-17; files are Parquet since 2026-11-22 (Avro before; see the [format benchmark](../benchmarks/README.md)). **Applies to:** every file written by `export-raw` and every table in the BigQuery `glamira_raw` dataset.
+**Status:** in force from 2026-11-17; files are Parquet since 2026-11-22 (Avro before; see the [file-format decision](decisions/raw_file_format.md)). **Applies to:** every file written by `export-raw` and every table in the BigQuery `glamira_raw` dataset.
 
 The contract is code, not this page. Each table is declared once in [`tables.py`](../src/glamira_pipeline/export/tables.py). From that one declaration:
 

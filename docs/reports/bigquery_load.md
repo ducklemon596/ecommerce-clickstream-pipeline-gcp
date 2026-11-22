@@ -81,7 +81,7 @@ flowchart LR
 | **`WRITE_TRUNCATE_DATA`** | `WRITE_APPEND`; `WRITE_TRUNCATE`; `MERGE` | Append duplicates on any repeat. `WRITE_TRUNCATE` would replace the table's schema with the one in the files. `MERGE` scans the target. The export is a full snapshot, so an atomic replace is exact |
 | **Retries through Eventarc** | Retry loops inside the function | Redelivery outlives a function timeout. Because of the 409 behaviour, a retry becomes a poll on the same job |
 | **Publish on the VM** | Download to a workstation first | The VM is in the bucket's region: no egress cost, and 4.46 GB uploaded in about 14 s |
-| **Parquet files** | Avro (used until 2026-11-22); JSONL | Half the bytes and faster loads, with type checks at write time like Avro ([format benchmark](../../benchmarks/README.md)) |
+| **Parquet files** | Avro (used until 2026-11-22); JSONL | Half the bytes and faster loads, with type checks at write time like Avro ([file-format decision](../decisions/raw_file_format.md)) |
 
 ## 4. Results
 
@@ -112,7 +112,7 @@ The same tables were loaded three times through the same code path, so the runs 
 | `product_option_values` | 923,294 | 9,543,926 | **5.0 s** | 10.3 s |
 | `products` | 19,557 | 1,464,053 | **1.4 s** | 1.9 s |
 
-The table is the same 25.03 GB in BigQuery whatever the input format. Parquet halved the bytes uploaded and the `events` load time, as the [format benchmark](../../benchmarks/README.md) predicted on one week of data.
+The table is the same 25.03 GB in BigQuery whatever the input format. Parquet halved the bytes uploaded and the `events` load time, as the [file-format decision](../decisions/raw_file_format.md) predicted on one week of data.
 
 ### 4.2 Verification
 

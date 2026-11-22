@@ -1,10 +1,10 @@
-# Decision record: schema of the raw events table (Avro → BigQuery)
+# Decision record: schema of the raw events table (Parquet → BigQuery)
 
 **Status:** accepted 2026-11-17 (proposed 2026-11-16; email and device ID hashing decided 2026-11-16, IP and customer ID hashing 2026-11-17). The schema in force is the [raw layer contract](../raw_layer_contract.md), generated from code; this record keeps the reasoning. **Scope:** the file format and schema used to export `countly.summary` to GCS and to load it into the BigQuery raw layer.
 
 ## Context
 
-- **What is being decided:** the export to GCS uses Avro (decided; measured against JSONL and Parquet in the [format benchmark](../../benchmarks/README.md)). The BigQuery raw table gets an explicit schema, and that schema must be identical to the one written into the Avro files.
+- **What is being decided:** the BigQuery raw table gets an explicit schema, and the files carry exactly the same schema. The files are Parquet since 2026-11-22; they were Avro before, and the switch was decided by the [file-format decision](raw_file_format.md). The schema rules below do not depend on the file format.
 - **Evidence:**
   - *Types and nullability:* the full-data [schema profile](../reports/schema_profile.md) (41,432,473 documents, 2026-11-14).
   - *Value-level facts:* one read-only `$facet` scan of `countly.summary` on 2026-11-16 (944 s). It checked timestamp range, integrality of `order_id`, bool values, string formats of IDs and positions, and the contents of `cart_products[].option`.
@@ -19,24 +19,25 @@
   | `cart_products[].option` | array 673,929, string 148,509 |
   | `cart_products[]` IDs | int; the same IDs are strings everywhere else |
 
-## How BigQuery reads Avro (constraints)
+## How BigQuery reads Parquet (constraints)
 
-Source: [Loading Avro data from Cloud Storage](https://docs.cloud.google.com/bigquery/docs/loading-data-cloud-storage-avro).
+Source: [Loading Parquet data from Cloud Storage](https://docs.cloud.google.com/bigquery/docs/loading-data-cloud-storage-parquet).
 
-| Avro | BigQuery | Consequence for this schema |
+| Parquet (Arrow) | BigQuery | Consequence for this schema |
 | --- | --- | --- |
-| `["null", T]` | NULLABLE `T` | Every optional field is written this way |
-| Union with more than one non-null type | RECORD with one nullable sub-field per type | Unusable for analysis, so mixed types are resolved **before** writing |
-| `array` | REPEATED | Arrays of arrays are not supported; none exist here |
-| `record` | RECORD | Each record type needs a unique Avro name |
-| `long` with `timestamp-micros` | TIMESTAMP, **only** with `use_avro_logical_types=true` | The load job must set this flag; without it the column arrives as INTEGER |
+| Nullable column | NULLABLE | Every optional field is written this way; REQUIRED fields are written not nullable |
+| One type per column | One type per column | There is no union type, so mixed source types are resolved **before** writing |
+| `list<T>` | REPEATED, **only** with `enable_list_inference` | The load job sets this option; without it the column arrives as a `list.element` record. Lists of lists are not supported; none exist here |
+| `struct` | RECORD | Nested structs map one to one |
+| `timestamp[us, tz=UTC]` | TIMESTAMP | Unix seconds are converted to microseconds when written |
+| `decimal128(38, 9)` | NUMERIC, with `decimal_target_types=NUMERIC` | Exact; a value finer than 9 decimals fails the export |
 | Field names | Must match `[A-Za-z_][A-Za-z0-9_]*` | `option.category id` cannot keep its name; it becomes `category_id` |
-| Compression | Snappy, DEFLATE or ZSTD blocks, read in parallel | DEFLATE is used: built into `fastavro`, no extra dependency |
+| Compression | Snappy, GZIP, ZSTD, per column chunk, read in parallel | Snappy is used: fast to write and read |
 
 **Column modes**
 - BigQuery can relax a column from REQUIRED to NULLABLE later, but never the reverse ([managing table schemas](https://docs.cloud.google.com/bigquery/docs/managing-table-schemas)).
 - So starting strict is the reversible choice.
-- How a load job checks a non-union Avro field against a REQUIRED column must be confirmed with one small test load (see Verification).
+- The table is always created from the contract before loading, and its schema is never taken from the files.
 
 ## Principles
 
@@ -151,9 +152,9 @@ LEFT JOIN UNNEST(line.option) AS opt
 WHERE e.collection = 'checkout_success'
 ```
 
-### Not complex in the source, but typed in Avro
+### Not complex in the source, but typed in the file
 
-`time_stamp` is a plain int of Unix seconds (`1591266092` for the first example). It is written as an Avro `long` with the logical type `timestamp-micros` (`1591266092000000`) so that BigQuery creates a TIMESTAMP column, which partitioning needs.
+`time_stamp` is a plain int of Unix seconds (`1591266092` for the first example). It is written as a microsecond UTC timestamp (`1591266092000000`) so that BigQuery creates a TIMESTAMP column, which partitioning needs.
 
 ## Schema: `glamira_raw.events`
 
@@ -167,7 +168,7 @@ WHERE e.collection = 'checkout_success'
 | --- | --- | --- | --- |
 | `_id` | STRING | REQUIRED | ObjectId → 24-char hex |
 | `collection` | STRING | REQUIRED | as is (event type) |
-| `time_stamp` | TIMESTAMP | REQUIRED | int Unix seconds → micros (Avro `timestamp-micros`). Range 1585699201–1591266092 |
+| `time_stamp` | TIMESTAMP | REQUIRED | int Unix seconds → micros (UTC timestamp). Range 1585699201–1591266092 |
 | `api_version` | STRING | REQUIRED | as is (always `"1.0"`) |
 | `store_id` | STRING | REQUIRED | as is (always digits) |
 | `current_url`, `referrer_url` | STRING | REQUIRED | as is; `referrer_url` is `""` for direct entries |
@@ -203,7 +204,7 @@ All nested fields are NULLABLE STRING unless stated otherwise.
 
 **`option_filter`**
 - Fields: `alloy`, `diamond`, `shapediamond`, `stone`, `price`, `finish`, `pearlcolor`, `kollektion`, `kollektion_id`, `category_id`.
-- Two keys are renamed: `Kollektion` → `kollektion` (BigQuery column names are case-insensitive), and `category id` → `category_id` (the space is invalid in Avro).
+- Two keys are renamed: `Kollektion` → `kollektion` (BigQuery column names are case-insensitive), and `category id` → `category_id` (the space is invalid in a BigQuery column name).
 
 **`cart_products[]`**
 - `product_id`: int → string.
@@ -215,7 +216,7 @@ All nested fields are NULLABLE STRING unless stated otherwise.
 
 ## Full type mapping
 
-The complete source → Avro → BigQuery mapping of every column, nested field and related table is generated from the code and kept in the [raw layer contract](../raw_layer_contract.md#5-tables). It is not repeated here, so there is one place to maintain.
+The complete source → file → BigQuery mapping of every column, nested field and related table is generated from the code and kept in the [raw layer contract](../raw_layer_contract.md#5-tables). It is not repeated here, so there is one place to maintain.
 
 ## What the raw layer cannot tell apart
 
@@ -232,7 +233,7 @@ Each conversion is counted by the exporter and recorded with the export run, so 
 
 | Alternative | Why not |
 | --- | --- |
-| Keep the mixed types as Avro unions | BigQuery would produce a RECORD per union, such as `order_id.long` and `order_id.string`, and every query would need `COALESCE` |
+| Keep the mixed types as unions (possible in Avro, the earlier format) | BigQuery would produce a RECORD per union, such as `order_id.long` and `order_id.string`, and every query would need `COALESCE` |
 | A `JSON` column for the whole document or for `option` | No type contract at the raw layer, slower queries, and the mixed-type problem only moves to dbt |
 | `order_id` and positions as INT64 | `""` would have to become NULL, which is a value change. The cast belongs in staging |
 | `option_filter` as a MAP, i.e. `ARRAY<STRUCT<key, value>>` (reviewed by the owner, 2026-11-17: STRUCT kept) | The 10 keys form two fixed sets, one per event type, each present in 100% of its objects. A STRUCT is read as plain columns, scans only the sub-column queried, and fails the export on an unknown key instead of hiding drift. Sparse NULLs cost almost nothing in BigQuery, and a new key is an additive NULLABLE field. The only loss is the original key names (`Kollektion`, `category id`), which the mapping table records |
@@ -240,16 +241,15 @@ Each conversion is counted by the exporter and recorded with the export run, so 
 
 ## Verification so far
 
-- **Generated from one definition.** The Avro schema, the BigQuery JSON schema and the converter all come from `src/glamira_pipeline/export/tables.py`; a unit test fails if the committed schema files drift.
-- **Sample export (2026-11-17):** the 100K sequential sample (non-random), loaded into a local MongoDB, exported with `export-avro` with **0 violations**.
-  - 100,000 rows in 3 parts, 22.4 MB, re-read with matching checksums and row counts. No raw IP, email, device ID or customer ID appears in the files.
+- **Generated from one definition.** The BigQuery JSON schema, the Parquet schema derived from it and the converter all come from `src/glamira_pipeline/export/tables.py`; a unit test fails if the committed schema files drift.
+- **Sample export (2026-11-17):** the 100K sequential sample (non-random), loaded into a local MongoDB, exported with **0 violations** (with the Avro writer, then again with Parquet on 2026-11-22).
+  - As Parquet: 100,000 rows in 1 part, 11.0 MB (22.4 MB as Avro), verified by checksum, footer schema and full decode. No raw IP, email, device ID or customer ID appears in the files.
   - Conversions: 27,350 / 27,340 bool → string in `utm_*`, 26,066 objects → `option_filter`, 101 `order_id` int/double → string, 1,740 cart product IDs, 43 `""` → `[]`.
 - **Enrichment tables:** types and modes come from read-only full scans of `ip_locations`, `products` and `product_option_values` on 2026-11-17.
 
-- **Full-data export (2026-11-17):** all four tables, 45,614,951 rows, with **0 violations**, so no unplanned case exists in the current data ([report](../reports/full_export_avro.md)).
+- **Full-data export:** all four tables, 45,614,951 rows, with **0 violations**, so no unplanned case exists in the current data. This held for Avro on 2026-11-17 and for Parquet on 2026-11-22 ([report](../reports/full_export.md)).
 
-**Still to verify**
-- **One test load into BigQuery** of a small export, to confirm TIMESTAMP, REQUIRED, empty arrays, the null STRUCT, NUMERIC and partitioning.
+- **BigQuery loads.** The full export was loaded as Avro on 2026-11-18 and as Parquet on 2026-11-22. Both times, these all matched the export: TIMESTAMP, REQUIRED modes (including the `products.source` STRUCT), empty arrays, the null STRUCT, NUMERIC, partitioning, the 65 daily counts and the join coverage ([load report](../reports/bigquery_load.md)).
 
 ## Personal data
 

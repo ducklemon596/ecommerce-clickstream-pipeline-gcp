@@ -1,4 +1,4 @@
-"""Optional local MongoDB tests for export-avro: chunks, resume, retry, determinism and failures.
+"""Optional local MongoDB tests for export-raw: chunks, resume, retry, determinism and failures.
 
 Run with a disposable server, e.g.::
 
@@ -15,7 +15,7 @@ import unittest
 import uuid
 
 from bson import ObjectId
-import fastavro
+import pyarrow.parquet as pq
 from pymongo.errors import AutoReconnect
 
 from glamira_pipeline.export.chunks import CoverageError
@@ -101,8 +101,7 @@ class ExportMongoIntegrationTests(unittest.TestCase):
         self.assertEqual(len(manifest["files"]), 6)  # 800 rows per day, 500 per file
         self.assertEqual(manifest["conversions"]["order_id: double -> string"], 800)
         self.assertEqual(verify_table(self.out / "events", SCHEMA_DIR, full=True).rows, 2_400)
-        with (self.out / "events" / "chunk=2020-04-01" / "part-00000.avro").open("rb") as stream:
-            rows = list(fastavro.reader(stream))
+        rows = pq.read_table(self.out / "events" / "chunk=2020-04-01" / "part-00000.parquet").to_pylist()
         self.assertEqual([r["_id"] for r in rows], sorted(r["_id"] for r in rows))
         self.assertFalse(any(r["ip_hash"].startswith("198.51.100") for r in rows))
 
@@ -146,7 +145,7 @@ class ExportMongoIntegrationTests(unittest.TestCase):
     def test_tampered_committed_chunk_stops_the_resume(self):
         with self.assertRaises(ExportInterrupted):
             self.export(should_stop=stop_after(1_000))
-        with (self.out / "events" / "chunk=2020-04-01" / "part-00000.avro").open("r+b") as stream:
+        with (self.out / "events" / "chunk=2020-04-01" / "part-00000.parquet").open("r+b") as stream:
             stream.seek(-1, 2)
             stream.write(b"\0")
         with self.assertRaisesRegex(StateError, "SHA-256 differs"):

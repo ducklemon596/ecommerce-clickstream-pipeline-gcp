@@ -1,4 +1,4 @@
-"""Convert decoded MongoDB documents into Avro rows of a raw-layer table.
+"""Convert decoded MongoDB documents into rows of a raw-layer table, ready for the Parquet writer.
 
 Raw keeps values and changes only representations (ObjectId → hex, int →
 decimal string, ``false`` → ``"false"``, 0/1 → bool, PII → HMAC). Anything the
@@ -39,7 +39,7 @@ class Converter:
         self._sources: dict[int, frozenset[str]] = {}
 
     def convert(self, document: Mapping[str, Any]) -> dict:
-        """Return the Avro row for one source document; raise SchemaViolation if it does not fit."""
+        """Return the row for one source document; raise SchemaViolation if it does not fit."""
         allowed: frozenset[str] = frozenset()
         if self.table.redundant_id:
             self._check_redundant_id(document)

@@ -52,7 +52,6 @@ CART_PRODUCT = Record("CartProduct", (
 
 EVENTS = Table(
     name="events",
-    record_name="Event",
     source_collection="summary",
     description="One row per tracking event (27 event types) from countly.summary.",
     partition_by="time_stamp",
@@ -107,7 +106,6 @@ EVENTS = Table(
 
 IP_LOCATIONS = Table(
     name="ip_locations",
-    record_name="IpLocation",
     source_collection="ip_locations",
     description="Offline IP2Location lookup of every distinct valid event IP.",
     sensitive_key=True,
@@ -136,7 +134,6 @@ PRODUCT_SOURCE = Record("ProductSource", (
 
 PRODUCTS = Table(
     name="products",
-    record_name="Product",
     source_collection="products",
     description="Product attributes crawled from Glamira react_data (2026 catalog), one row per event product ID.",
     redundant_id=("product_id",),
@@ -182,7 +179,6 @@ PRODUCTS = Table(
 
 PRODUCT_OPTION_VALUES = Table(
     name="product_option_values",
-    record_name="ProductOptionValue",
     source_collection="product_option_values",
     description="One row per (product, option, value) served by react_data: resolves event option/value IDs.",
     redundant_id=("product_id", "option_id", "value_id"),

@@ -1,7 +1,6 @@
-"""Unit tests for the Avro export: schema rendering, PII hashing, row conversion and part files."""
+"""Unit tests for the raw export: schema rendering, PII hashing, row conversion and Parquet part files."""
 from datetime import datetime, timezone
 from decimal import Decimal
-import io
 import json
 from pathlib import Path
 import re
@@ -10,13 +9,14 @@ import unittest
 
 from bson.decimal128 import Decimal128
 from bson.objectid import ObjectId
-import fastavro
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from glamira_pipeline.export.avro_files import AvroPartWriter
 from glamira_pipeline.export.cli import SCHEMA_DIR
 from glamira_pipeline.export.convert import Converter, SchemaViolation, check_rules
 from glamira_pipeline.export.pii import PiiHasher, hasher_from_env
-from glamira_pipeline.export.schema import Field, Record, Table, avro_schema, bigquery_schema, schema_json
+from glamira_pipeline.export.parquet_files import ParquetPartWriter
+from glamira_pipeline.export.schema import Field, Record, Table, bigquery_schema, parquet_schema, schema_json
 from glamira_pipeline.export.tables import EVENTS, IP_LOCATIONS, PRODUCT_OPTION_VALUES, PRODUCTS, TABLES
 
 KEY = bytes(range(32))
@@ -35,21 +35,28 @@ def event(**overrides):
     return doc
 
 
+def write_part(directory, schema, rows):
+    """Write ``rows`` as one Parquet part and return it."""
+    writer = ParquetPartWriter(directory, schema)
+    for row in rows:
+        writer.write(row)
+    return writer.close()[0]
+
+
 def roundtrip(table, rows):
-    """Write rows with fastavro's validator and read them back."""
-    buffer = io.BytesIO()
-    fastavro.writer(buffer, fastavro.parse_schema(avro_schema(table)), rows, validator=True)
-    buffer.seek(0)
-    return list(fastavro.reader(buffer))
+    """Write converter rows as a Parquet part and read them back as Python values."""
+    with TemporaryDirectory() as tmp:
+        part = write_part(Path(tmp), parquet_schema(bigquery_schema(table)), rows)
+        return pq.read_table(Path(tmp) / part.name).to_pylist()
 
 
 class SchemaTests(unittest.TestCase):
     def test_every_table_parses_and_uses_known_rules(self):
         for table in TABLES.values():
-            fastavro.parse_schema(avro_schema(table))
+            parquet_schema(bigquery_schema(table))
             check_rules(table)
 
-    def test_names_are_valid_for_avro_and_bigquery(self):
+    def test_names_are_valid_for_bigquery(self):
         def walk(fields):
             for field in fields:
                 self.assertRegex(field.name, NAME)
@@ -59,21 +66,19 @@ class SchemaTests(unittest.TestCase):
             walk(table.fields)
 
     def test_modes_render_as_bigquery_expects(self):
-        avro = {f["name"]: f for f in avro_schema(EVENTS)["fields"]}
         bq = {f["name"]: f for f in bigquery_schema(EVENTS)}
-        self.assertEqual(avro["_id"]["type"], "string")
-        self.assertEqual(avro["email_hash"]["type"], ["null", "string"])
-        self.assertEqual(avro["option"]["type"]["type"], "array")
-        self.assertEqual(avro["time_stamp"]["type"]["logicalType"], "timestamp-micros")
+        arrow = parquet_schema(bigquery_schema(EVENTS))
         self.assertEqual((bq["_id"]["mode"], bq["option"]["mode"], bq["option"]["type"]),
                          ("REQUIRED", "REPEATED", "RECORD"))
-        price = next(f for f in avro_schema(PRODUCTS)["fields"] if f["name"] == "price")["type"][1]
-        self.assertEqual((price["logicalType"], price["precision"], price["scale"]), ("decimal", 38, 9))
+        self.assertFalse(arrow.field("_id").nullable)
+        self.assertTrue(arrow.field("email_hash").nullable)
+        self.assertTrue(pa.types.is_list(arrow.field("option").type) and not arrow.field("option").nullable)
+        self.assertEqual(arrow.field("time_stamp").type, pa.timestamp("us", tz="UTC"))
+        self.assertEqual(parquet_schema(bigquery_schema(PRODUCTS)).field("price").type, pa.decimal128(38, 9))
 
     def test_committed_schema_files_match_the_contract(self):
+        self.assertEqual(sorted(p.name for p in SCHEMA_DIR.iterdir()), sorted(f"{t}.bq.json" for t in TABLES))
         for table in TABLES.values():
-            self.assertEqual((SCHEMA_DIR / f"{table.name}.avsc").read_text(encoding="utf-8"),
-                             schema_json(avro_schema(table)), f"run: uv run write-raw-schemas ({table.name})")
             self.assertEqual((SCHEMA_DIR / f"{table.name}.bq.json").read_text(encoding="utf-8"),
                              schema_json(bigquery_schema(table)), f"run: uv run write-raw-schemas ({table.name})")
 
@@ -95,9 +100,9 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual((EVENTS.partition_by, EVENTS.cluster_by), ("time_stamp", ("collection",)))
         fields = (Field("t", "TIMESTAMP", "NULLABLE"), Field("s", "STRING"))
         with self.assertRaisesRegex(ValueError, "REQUIRED TIMESTAMP"):
-            Table("x", "X", "x", "", fields, partition_by="t")
+            Table("x", "x", "", fields, partition_by="t")
         with self.assertRaisesRegex(ValueError, "top-level scalar"):
-            Table("x", "X", "x", "", fields, cluster_by=("missing",))
+            Table("x", "x", "", fields, cluster_by=("missing",))
 
 
 class PiiTests(unittest.TestCase):
@@ -221,6 +226,7 @@ class EnrichmentConversionTests(unittest.TestCase):
         back = roundtrip(PRODUCTS, [row])[0]
         self.assertEqual(back["sale_price"], Decimal("2588.25"))
         self.assertEqual(back["crawled_at"], self.CRAWLED.replace(tzinfo=timezone.utc))
+        self.assertEqual(back["source"]["store_code"], "glus")
 
     def test_products_reject_redundant_id_mismatch_and_excess_scale(self):
         converter = Converter(PRODUCTS, HASHER)
@@ -252,30 +258,44 @@ class EnrichmentConversionTests(unittest.TestCase):
 
 
 class PartWriterTests(unittest.TestCase):
-    SCHEMA = {"type": "record", "name": "T", "fields": [{"name": "a", "type": "long"}]}
+    SCHEMA = pa.schema([pa.field("a", pa.int64(), nullable=False)])
 
     def test_parts_rotate_and_are_complete(self):
         with TemporaryDirectory() as tmp:
-            writer = AvroPartWriter(Path(tmp), self.SCHEMA, rows_per_file=3)
+            writer = ParquetPartWriter(Path(tmp), self.SCHEMA, rows_per_file=3, row_group_rows=2)
             for i in range(7):
                 writer.write({"a": i})
             parts = writer.close()
             self.assertEqual([p.rows for p in parts], [3, 3, 1])
-            values = []
-            for part in parts:
-                with (Path(tmp) / part.name).open("rb") as stream:
-                    values += [r["a"] for r in fastavro.reader(stream)]
+            values = [v for part in parts for v in pq.read_table(Path(tmp) / part.name).column("a").to_pylist()]
             self.assertEqual(values, list(range(7)))
+            self.assertEqual([pq.ParquetFile(Path(tmp) / p.name).metadata.num_row_groups for p in parts], [2, 2, 1])
             self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()),
-                             ["part-00000.avro", "part-00001.avro", "part-00002.avro"])
+                             ["part-00000.parquet", "part-00001.parquet", "part-00002.parquet"])
+
+    def test_checksum_is_of_the_written_bytes(self):
+        import hashlib
+        with TemporaryDirectory() as tmp:
+            part = write_part(Path(tmp), self.SCHEMA, [{"a": 1}, {"a": 2}])
+            data = (Path(tmp) / part.name).read_bytes()
+            self.assertEqual((part.bytes, part.sha256), (len(data), hashlib.sha256(data).hexdigest()))
 
     def test_abort_removes_the_open_part_only(self):
         with TemporaryDirectory() as tmp:
-            writer = AvroPartWriter(Path(tmp), self.SCHEMA, rows_per_file=2)
+            writer = ParquetPartWriter(Path(tmp), self.SCHEMA, rows_per_file=2, row_group_rows=1)
             for i in range(3):
                 writer.write({"a": i})
             writer.abort()
-            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["part-00000.avro"])
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["part-00000.parquet"])
+
+    def test_a_row_that_does_not_fit_the_schema_is_rejected(self):
+        with TemporaryDirectory() as tmp:
+            writer = ParquetPartWriter(Path(tmp), self.SCHEMA, row_group_rows=2)
+            writer.write({"a": "7"})
+            with self.assertRaises(pa.ArrowException):
+                writer.write({"a": 1})
+            writer.abort()
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
 if __name__ == "__main__":

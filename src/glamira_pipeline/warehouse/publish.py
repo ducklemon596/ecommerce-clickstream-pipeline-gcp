@@ -1,7 +1,7 @@
 """Upload a verified table export to GCS, finishing with the ``_load.json`` that triggers the load.
 
 Object layout: ``<prefix>/<table>/export_id=<export-id>/`` holding the parts
-under ``chunk=<id>/``, the two schema files, ``_manifest.json`` and, last,
+under ``chunk=<id>/``, the BigQuery schema file, ``_manifest.json`` and, last,
 ``_load.json``. Only files the manifest lists are uploaded; local state files
 (``_export.json``, ``.lock``, ``_SUCCESS.json``) stay local.
 
@@ -84,7 +84,7 @@ def publish_table(table_dir: Path, bucket, *, prefix: str, dataset: str, schema_
     parts = [part["name"] for part in manifest["files"]]
     with ThreadPoolExecutor(max(1, workers)) as pool:
         outcomes = list(pool.map(lambda name: _upload_file(bucket, table_dir / name, f"{base}/{name}"), parts))
-    for name in (f"{table}.avsc", f"{table}.bq.json", MANIFEST):
+    for name in (f"{table}.bq.json", MANIFEST):
         outcomes.append(_upload_file(bucket, table_dir / name, f"{base}/{name}"))
     outcomes.append(_upload_text(bucket, spec.to_json(), f"{base}/{LOAD_SPEC}"))  # last: the commit and the trigger
 

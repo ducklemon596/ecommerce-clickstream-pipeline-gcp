@@ -32,7 +32,7 @@ def publish_main() -> None:
     parser.add_argument("--dataset", default="glamira_raw",
                         help="BigQuery dataset the load spec targets (default: glamira_raw)")
     parser.add_argument("--workers", type=int, default=4, help="parallel part uploads (default 4)")
-    parser.add_argument("--schema-dir", type=Path, default=SCHEMA_DIR, help="committed Avro schemas")
+    parser.add_argument("--schema-dir", type=Path, default=SCHEMA_DIR, help="committed BigQuery schemas (schemas/raw)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from google.cloud import storage

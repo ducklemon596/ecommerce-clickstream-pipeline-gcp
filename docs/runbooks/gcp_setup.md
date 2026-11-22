@@ -79,7 +79,7 @@ gcloud storage buckets create gs://$BUCKET --location $REGION --default-storage-
 Repeat for `glamira_raw_sample`, which holds test loads.
 
 ```bash
-bq mk --location $REGION --dataset --description "Raw layer, loaded from verified Avro exports" $PROJECT:glamira_raw
+bq mk --location $REGION --dataset --description "Raw layer, loaded from verified Parquet exports" $PROJECT:glamira_raw
 bq mk --location $REGION --dataset --description "Raw layer test loads" $PROJECT:glamira_raw_sample
 ```
 

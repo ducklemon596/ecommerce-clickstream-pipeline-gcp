@@ -20,13 +20,13 @@ import os
 from pathlib import Path
 import re
 
-from glamira_pipeline.export.avro_files import PartFile
+from glamira_pipeline.export.parquet_files import PartFile
 from glamira_pipeline.provenance import file_sha256
 
 IDENTITY = "_export.json"
 SUCCESS = "_SUCCESS.json"
 LOCK = ".lock"
-_UNCOMMITTED = re.compile(r"^(part-\d{5}\.avro(\.tmp)?|_SUCCESS\.json\.tmp)$")
+_UNCOMMITTED = re.compile(r"^(part-\d{5}\.parquet(\.tmp)?|_SUCCESS\.json\.tmp)$")
 
 
 class StateError(RuntimeError):
@@ -108,7 +108,7 @@ def committed_chunk(directory: Path) -> dict | None:
     if marker is None:
         return None
     listed = {part["name"] for part in marker["files"]}
-    present = {path.name for path in directory.glob("part-*.avro")}
+    present = {path.name for path in directory.glob("part-*.parquet")}
     if present != listed:
         raise StateError(f"{directory}: parts on disk {sorted(present)} differ from the marker {sorted(listed)}")
     for part in (PartFile(**p) for p in marker["files"]):

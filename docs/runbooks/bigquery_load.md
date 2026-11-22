@@ -16,11 +16,11 @@ export BUCKET=glamira-raw-datalake-asia-southeast1
 
 ## 1. Test load with the 100K sample (workstation)
 
-`data/exports/sample-100k` is an `events` export of the 100K sample that has already passed `verify-export`.
+`data/exports/sample-100k-parquet` is an `events` export of the 100K sample that has already passed `verify-export`.
 
 ```bash
-uv run publish-export data/exports/sample-100k --bucket $BUCKET --prefix raw_sample --dataset glamira_raw_sample
-gcloud storage cat gs://$BUCKET/raw_sample/events/export_id=sample-100k/_LOADED.json   # appears within a minute
+uv run publish-export data/exports/sample-100k-parquet --bucket $BUCKET --prefix raw_sample --dataset glamira_raw_sample
+gcloud storage cat gs://$BUCKET/raw_sample/events/export_id=sample-100k-parquet/_LOADED.json   # appears within a minute
 for check in 01_tables 02_layout 03_events_by_day 04_events_shapes; do
   sed 's/{{dataset}}/glamira_raw_sample/g' sql/checks/$check.sql | bq query --use_legacy_sql=false
 done

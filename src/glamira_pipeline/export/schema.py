@@ -1,8 +1,10 @@
-"""Schema model for the raw layer, and its two renderings: Avro and BigQuery JSON.
+"""Schema model for the raw layer, and its two renderings: BigQuery JSON and the Parquet (Arrow) schema.
 
 A table is declared once (see ``tables.py``). Each field carries its target
-type and mode *and* the source key and conversion rule that fill it, so the
-Avro schema, the BigQuery schema and the row converter cannot drift apart.
+type and mode *and* the source key and conversion rule that fill it. The
+BigQuery schema is rendered from the declaration, and the Parquet schema of
+the files is derived from the BigQuery schema, so the files, the BigQuery
+table and the row converter cannot drift apart.
 """
 from __future__ import annotations
 
@@ -10,28 +12,20 @@ from dataclasses import dataclass
 import hashlib
 import json
 
+import pyarrow as pa
+
 REQUIRED, NULLABLE, REPEATED = "REQUIRED", "NULLABLE", "REPEATED"
 STRING, INT64, BOOL, NUMERIC, TIMESTAMP = "STRING", "INT64", "BOOL", "NUMERIC", "TIMESTAMP"
 SCALAR_TYPES = (STRING, INT64, BOOL, NUMERIC, TIMESTAMP)
-# decimal(38, 9) is the widest Avro decimal BigQuery loads as NUMERIC.
+# decimal(38, 9) is BigQuery NUMERIC exactly.
 DECIMAL_PRECISION, DECIMAL_SCALE = 38, 9
-AVRO_NAMESPACE = "glamira.raw"
-
-_AVRO_SCALAR = {
-    STRING: "string",
-    INT64: "long",
-    BOOL: "boolean",
-    NUMERIC: {"type": "bytes", "logicalType": "decimal",
-              "precision": DECIMAL_PRECISION, "scale": DECIMAL_SCALE},
-    TIMESTAMP: {"type": "long", "logicalType": "timestamp-micros"},
-}
 # Names accepted in every BigQuery JSON schema file (bq CLI, client libraries, Terraform).
 _BQ_TYPE = {STRING: "STRING", INT64: "INTEGER", BOOL: "BOOLEAN", NUMERIC: "NUMERIC", TIMESTAMP: "TIMESTAMP"}
 
 
 @dataclass(frozen=True)
 class Record:
-    """A nested STRUCT; ``name`` is its Avro record name, unique within a table."""
+    """A nested STRUCT; ``name`` labels the struct type in documentation."""
 
     name: str
     fields: tuple[Field, ...]
@@ -73,7 +67,6 @@ class Table:
     """
 
     name: str
-    record_name: str
     source_collection: str
     description: str
     fields: tuple[Field, ...]
@@ -94,37 +87,6 @@ class Table:
             field = columns.get(name)
             if field is None or isinstance(field.type, Record) or field.mode == REPEATED:
                 raise ValueError(f"{self.name}: cluster_by column {name!r} must be a top-level scalar")
-
-
-def avro_schema(table: Table) -> dict:
-    """Return the Avro record schema of a table (BigQuery-compatible names and types)."""
-    return {"type": "record", "name": table.record_name, "namespace": AVRO_NAMESPACE,
-            "doc": table.description, "fields": _avro_fields(table.fields, set())}
-
-
-def _avro_fields(fields: tuple[Field, ...], defined: set[str]) -> list[dict]:
-    out = []
-    for field in fields:
-        if isinstance(field.type, Record):
-            if field.type.name in defined:
-                base = field.type.name
-            else:
-                defined.add(field.type.name)
-                base = {"type": "record", "name": field.type.name,
-                        "fields": _avro_fields(field.type.fields, defined)}
-        else:
-            base = _AVRO_SCALAR[field.type]
-        entry: dict = {"name": field.name}
-        if field.description:
-            entry["doc"] = field.description
-        if field.mode == REPEATED:
-            entry.update(type={"type": "array", "items": base}, default=[])
-        elif field.mode == NULLABLE:
-            entry.update(type=["null", base], default=None)
-        else:
-            entry["type"] = base
-        out.append(entry)
-    return out
 
 
 def bigquery_schema(table: Table) -> list[dict]:
@@ -153,5 +115,25 @@ def schema_json(schema: dict | list) -> str:
 
 
 def schema_fingerprint(table: Table) -> str:
-    """SHA-256 of the Avro schema text, recorded in export manifests."""
-    return hashlib.sha256(schema_json(avro_schema(table)).encode()).hexdigest()
+    """SHA-256 of the committed BigQuery schema text (``schemas/raw/<table>.bq.json``), recorded in manifests."""
+    return hashlib.sha256(schema_json(bigquery_schema(table)).encode()).hexdigest()
+
+
+def parquet_schema(bigquery_fields: list[dict]) -> pa.Schema:
+    """The Arrow schema of the Parquet parts, derived from a BigQuery JSON schema.
+
+    REQUIRED → not nullable, NULLABLE → nullable, REPEATED → a non-null list
+    (loaded as REPEATED with ``enable_list_inference``), RECORD → struct,
+    NUMERIC → decimal128(38, 9), TIMESTAMP → microseconds in UTC.
+    """
+    scalar = {"STRING": pa.string(), "INTEGER": pa.int64(), "BOOLEAN": pa.bool_(),
+              "NUMERIC": pa.decimal128(DECIMAL_PRECISION, DECIMAL_SCALE), "TIMESTAMP": pa.timestamp("us", tz="UTC")}
+
+    def field(spec: dict) -> pa.Field:
+        kind = pa.struct([field(child) for child in spec["fields"]]) if spec["type"] == "RECORD" else scalar[spec["type"]]
+        mode = spec.get("mode", NULLABLE)
+        if mode == REPEATED:
+            return pa.field(spec["name"], pa.list_(kind), nullable=False)
+        return pa.field(spec["name"], kind, nullable=mode != REQUIRED)
+
+    return pa.schema([field(spec) for spec in bigquery_fields])

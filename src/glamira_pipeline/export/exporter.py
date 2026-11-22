@@ -1,10 +1,10 @@
-"""Export one MongoDB collection to Avro parts: resumable, retry-safe and byte-deterministic.
+"""Export one MongoDB collection to Parquet parts: resumable, retry-safe and byte-deterministic.
 
 Output layout, one directory per table inside an export directory::
 
     <export>/<table>/_export.json                  identity: the inputs of this export
-    <export>/<table>/<table>.avsc, <table>.bq.json schemas the parts were written with
-    <export>/<table>/chunk=<id>/part-NNNNN.avro    rows of one chunk, sorted by _id
+    <export>/<table>/<table>.bq.json               BigQuery schema the parts were written from
+    <export>/<table>/chunk=<id>/part-NNNNN.parquet rows of one chunk, sorted by _id
     <export>/<table>/chunk=<id>/_SUCCESS.json      chunk commit marker, written last
     <export>/<table>/_manifest.json                written when every chunk is committed
 
@@ -26,19 +26,19 @@ import logging
 from pathlib import Path
 import random
 import time
-import zlib
 
-import fastavro
+import pyarrow
 from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import AutoReconnect, CursorNotFound
 
-from glamira_pipeline.export.avro_files import CODEC, AvroPartWriter, part_dicts
 from glamira_pipeline.export.chunks import Chunk, plan_chunks
 from glamira_pipeline.export.convert import Converter, SchemaViolation, check_rules
 from glamira_pipeline.export.parallel import ChunkJob, export_chunks_in_processes
+from glamira_pipeline.export.parquet_files import COMPRESSION, FORMAT_VERSION, ROW_GROUP_ROWS, ParquetPartWriter, \
+    part_dicts
 from glamira_pipeline.export.pii import PiiHasher
-from glamira_pipeline.export.schema import Table, avro_schema, bigquery_schema, schema_fingerprint, schema_json
+from glamira_pipeline.export.schema import Table, bigquery_schema, parquet_schema, schema_fingerprint, schema_json
 from glamira_pipeline.export.state import (claim_identity, commit_chunk, committed_chunk, exclusive_lock, read_json,
                                            reset_chunk, write_json_atomic)
 from glamira_pipeline.provenance import git_sha, mongo_collection_identity
@@ -66,6 +66,7 @@ class ExportOptions:
     """
 
     rows_per_file: int = 1_000_000
+    row_group_rows: int = ROW_GROUP_ROWS
     workers: int = 1
     limit: int | None = None
     batch_size: int = 10_000
@@ -74,9 +75,8 @@ class ExportOptions:
 
 
 def write_schema_files(table: Table, directory: Path) -> None:
-    """Write ``<table>.avsc`` and ``<table>.bq.json`` into ``directory``."""
+    """Write ``<table>.bq.json``, the BigQuery schema the Parquet schema is derived from, into ``directory``."""
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{table.name}.avsc").write_text(schema_json(avro_schema(table)), encoding="utf-8")
     (directory / f"{table.name}.bq.json").write_text(schema_json(bigquery_schema(table)), encoding="utf-8")
 
 
@@ -104,12 +104,12 @@ def export_table(table: Table, collection: Collection, export_dir: Path, hasher:
             "selection": _selection(options),
             "source": {"namespace": source["namespace"], "uuid": source["uuid"]},
             "chunks": [{**chunk.describe(), "documents": expected[chunk.id]} for chunk in chunks],
-            "avro_schema_sha256": schema_fingerprint(table),
+            "schema_sha256": schema_fingerprint(table),
             "pii_key_fingerprint": hasher.fingerprint(),
-            "codec": CODEC,
+            "format": f"parquet {FORMAT_VERSION}, {COMPRESSION}",
             "rows_per_file": options.rows_per_file,
-            "fastavro": fastavro.__version__,
-            "zlib": zlib.ZLIB_RUNTIME_VERSION,
+            "row_group_rows": options.row_group_rows,
+            "pyarrow": pyarrow.__version__,
         }
         stored = claim_identity(target, identity, {"created_at": _now(), "git_sha": git_sha(),
                                                    "endpoint": source["endpoint"]})
@@ -146,7 +146,7 @@ class ChunkExporter:
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self.table, self.collection, self.target, self.hasher = table, collection, target, hasher
         self.options, self.should_stop, self.sleep = options, should_stop, sleep
-        self.schema = avro_schema(table)
+        self.schema = parquet_schema(bigquery_schema(table))
 
     def run(self, chunk: Chunk, expected: int) -> dict:
         directory = self.target / chunk.directory
@@ -184,8 +184,8 @@ class ChunkExporter:
             raise ExportError(f"{self.table.name} {chunk.directory}: {count_before:,} documents now, "
                               f"{expected:,} when the export was planned; the source changed")
         converter = Converter(self.table, self.hasher)
-        writer = AvroPartWriter(directory, self.schema, rows_per_file=self.options.rows_per_file,
-                                sync_seed=f"{self.table.name}/{chunk.id}")
+        writer = ParquetPartWriter(directory, self.schema, rows_per_file=self.options.rows_per_file,
+                                   row_group_rows=self.options.row_group_rows)
         cursor = self.collection.find(chunk.query, sort=[("_id", 1)], batch_size=self.options.batch_size,
                                       limit=chunk.limit or 0)
         seconds = {"read": 0.0, "convert": 0.0, "write": 0.0}
@@ -215,6 +215,9 @@ class ChunkExporter:
                     first_id = document["_id"]
                 last_id = document["_id"]
             parts = writer.close()
+        except pyarrow.ArrowException as exc:  # the converter checks types first, so this is a contract/code mismatch
+            writer.abort()
+            raise ExportError(f"{self.table.name} {chunk.directory}: Parquet rejected a row group: {exc}") from exc
         except BaseException:
             writer.abort()
             raise
@@ -265,10 +268,11 @@ def _manifest(table: Table, export_id: str, stored: dict, markers: list[dict], h
         "bytes": sum(part["bytes"] for part in files),
         "content_sha256": content_sha256(files),
         "conversions": dict(sorted(conversions.items())),
-        "avro_schema_sha256": identity["avro_schema_sha256"],
+        "schema_sha256": identity["schema_sha256"],
         "pii_key_fingerprint": hasher.fingerprint(),
-        "codec": identity["codec"],
+        "format": identity["format"],
         "rows_per_file": identity["rows_per_file"],
+        "row_group_rows": identity["row_group_rows"],
         "git_sha": git_sha(),
         "started_at": recorded["created_at"],
         "finished_at": _now(),

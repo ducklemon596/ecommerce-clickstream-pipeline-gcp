@@ -19,8 +19,8 @@ flowchart LR
 
 ```text
 gs://<bucket>/<prefix>/<table>/export_id=<export-id>/
-  chunk=<id>/part-NNNNN.avro      the parts listed in the export manifest
-  <table>.avsc, <table>.bq.json   schemas the parts were written with
+  chunk=<id>/part-NNNNN.parquet   the parts listed in the export manifest
+  <table>.bq.json                 BigQuery schema the parts were written from
   _manifest.json                  the export manifest
   _load.json                      written last: the load spec and the trigger
   _LOADED.json                    written by the loader after a verified load

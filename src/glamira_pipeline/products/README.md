@@ -182,4 +182,4 @@ db.enrichment_runs.find({type: "product_crawl"}).sort({started_at: -1}).limit(3)
 - The catalog and prices are from 2026, not from the 2019 events. Revenue analysis must use event prices.
 - 436 IDs (1.54% of event product references) no longer exist on any English store.
 - One requesting IP; the safe rate depends on Akamai's current policy (see the decision record).
-- `gender` mixes string and boolean. The raw export writes it as STRING, with `false` → `"false"`; see the [raw layer contract](../../../docs/raw_layer_contract.md#53-rawproducts).
+- `gender` mixes string and boolean. The raw export writes it as STRING, with `false` → `"false"`; see the [raw layer contract](../../../docs/raw_layer_contract.md#53-glamira_rawproducts).

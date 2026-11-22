@@ -157,7 +157,11 @@ The arguments that first kept Avro do not hold up:
 - The BigQuery load uses `PARQUET` with list inference.
 - On the 100K sample, the export's write time fell from 2.5 s to 1.0 s and the files from 22.4 MB to 11.0 MB.
 
-**Still to measure:** the full re-export and load in Parquet (pending at the time of writing).
+**Measured on the full data** (2026-11-22, [export report](../docs/reports/full_export.md), [load report](../docs/reports/bigquery_load.md)):
+- The full export took 42 min 39 s instead of 52 min 46 s, and wrote 4.69 GB instead of 9.30 GB.
+- The write stage fell from 3,261 to 1,172 worker-seconds.
+- The `events` load job took 14.3 s instead of 29.1 s.
+- Every BigQuery check matched the Avro load.
 
 ## 6. Reproduce
 

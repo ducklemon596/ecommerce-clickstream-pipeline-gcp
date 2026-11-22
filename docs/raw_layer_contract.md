@@ -352,10 +352,10 @@ The default reads only the footers, a few kilobytes per part: the SHA-256 covers
 | `1` | Configuration, contract violation, count or coverage mismatch, changed committed chunk, different identity, MongoDB or file error | First difference found |
 | `130` | Interrupted; rerun to resume | — |
 
-**Measured** on the project VM, 2026-11-17, with `--workers 3` and the earlier Avro writer ([report](reports/full_export_avro.md)); the full Parquet run is pending. On the 100K sample, Parquet halved the files (22.4 → 11.0 MB) and cut write time from 2.5 s to 1.0 s:
-- **Volume:** 45,614,951 rows and 9.30 GB, with 0 violations and no retries.
-- **Export:** 52 min 46 s; `events` alone took 49 min, at 14,054 rows/s.
-- **Verify:** `verify-export` of all four tables took 53 s.
+**Measured** on the project VM, 2026-11-22, with `--workers 3` ([report](reports/full_export.md)):
+- **Volume:** 45,614,951 rows and 4.69 GB of Parquet (9.30 GB as Avro), with 0 violations and no retries.
+- **Export:** 42 min 39 s; `events` alone took 39 min 50 s, at 17,336 rows/s. With Avro the export took 52 min 46 s.
+- **Verify:** `verify-export` of all four tables took 30 s.
 
 ## 7. Loading into BigQuery
 
@@ -386,7 +386,7 @@ uv run publish-export /data/exports/2026-11-17 --bucket <bucket> --dataset glami
 
 ## 9. Known limitations
 
-- **CPU-bound export.** Convert is about 50% of the work. Three workers made `events` 2.06× faster, not 3×, on 4 shared vCPUs that `mongod` also uses.
+- **CPU-bound export.** Convert (contract checks and HMAC) is 62% of the work since the Parquet writer cut the write stage to a third. Three workers on 4 shared vCPUs, which `mongod` also uses, give less than 3×.
 - **Converter changes need a new export ID.** The export identity covers the schema hash, not the converter code.
 - **Lost distinctions.** Missing key vs explicit null, `""` vs `[]` in cart options, int vs double `order_id`, bool `false` vs string `"false"`. Each conversion is counted, so the counts are auditable. Details are in the decision record.
 - **Different time frames.** Enrichment data is from 2026 (catalog) and 2016 (IP database), while events are from 2020-04-01 to 2020-06-04.

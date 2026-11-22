@@ -9,7 +9,7 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - publishes the files to GCS, where a Cloud Function loads them into BigQuery;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. The exporter and the [raw layer contract](docs/raw_layer_contract.md) are built. The full data has been exported, published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. The raw files moved from Avro to Parquet after a [format benchmark](benchmarks/README.md); the full Parquet re-export is the current step. dbt models and dashboards come next.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The exporter and the [raw layer contract](docs/raw_layer_contract.md) are built. The full data has been exported, published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. The raw files are Parquet, chosen over Avro and JSONL by a [format benchmark](benchmarks/README.md). dbt models and dashboards come next.
 
 ## Results at a glance
 
@@ -23,8 +23,8 @@ It answers to three business questions: geographic performance, product and cate
 | Product IDs | 19,557 distinct IDs, from `product_id`, `viewing_product_id` and `cart_products[].product_id` |
 | Product attributes | 19,121 found, 436 confirmed gone on all 11 English storefronts. Products without attributes cover 1.54% of event product references |
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
-| Raw export (full, Avro writer) | 4 tables, 45,614,951 rows, 9.30 GB in 53 min on the VM with 3 workers (2.4× faster end to end than one process), plus 53 s for `verify-export`. 0 contract violations, no retries. On the 100K sample, no raw IP, email, device ID or customer ID appeared in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export_avro.md) |
-| BigQuery load (full) | `glamira_raw`: 4 tables, 45,614,951 rows, 25.03 GB, one load job per table. Publish to GCS took 71 s; the Cloud Function finished all loads 36 s later. Every row count and all 65 day counts match the export; geolocation and product joins reproduce 98.88% and 1.54%. [Report](docs/reports/bigquery_load.md) |
+| Raw export (full) | 4 tables, 45,614,951 rows, 4.69 GB of Parquet in 43 min on the VM with 3 workers, including a 30 s `verify-export` (Avro: 9.30 GB, 54 min; one process: 2 h 07 min). 0 contract violations, no retries. On the 100K sample, no raw IP, email, device ID or customer ID appeared in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export.md) |
+| BigQuery load (full) | `glamira_raw`: 4 tables, 45,614,951 rows, 25.03 GB, one load job per table. Publish to GCS took 48 s; the Cloud Function finished all loads 23 s later (`events` load job 14 s, 29 s with Avro). Every row count and all 65 day counts match the export; geolocation and product joins reproduce 98.88% and 1.54%. [Report](docs/reports/bigquery_load.md) |
 
 Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
 
@@ -66,7 +66,7 @@ flowchart LR
 | 3b | Product collections | `uv run setup-product-collections` | — | Validated empty collections |
 | 3c | Product crawl | `uv run crawl-products …` | 19,557 IDs | `products`, `product_option_values`; [guide](src/glamira_pipeline/products/README.md) |
 | 4 | Schema per event type | `uv run profile-schema --full` | Full scan, read only (`--size N` for a random `$sample`) | [Schema profile](docs/reports/schema_profile.md) → [Data dictionary](docs/data_dictionary.md) |
-| 5 | Export the raw layer | `uv run export-raw --table all --output-dir … --export-id …` | Full, read only, in day chunks (`--workers N` in parallel); rerun to resume (`--limit N` for a labelled sample) | Parquet parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md), [run report](docs/reports/full_export_avro.md) |
+| 5 | Export the raw layer | `uv run export-raw --table all --output-dir … --export-id …` | Full, read only, in day chunks (`--workers N` in parallel); rerun to resume (`--limit N` for a labelled sample) | Parquet parts, chunk markers and `_manifest.json` per table; [raw layer contract](docs/raw_layer_contract.md), [run report](docs/reports/full_export.md) |
 | 5b | Verify a stored export | `uv run verify-export <export dir>` | Checksums and inventory, no decoding (`--full` decodes every record) | Pass or exit 1 with the first difference |
 | 6 | Publish to GCS | `uv run publish-export <export dir> --bucket …` | Verified export; create-only uploads, `_load.json` last | `gs://…/raw/<table>/export_id=<id>/`; [warehouse guide](src/glamira_pipeline/warehouse/README.md) |
 | 6b | Load BigQuery | Cloud Function `bigquery-loader` on `_load.json` (`uv run load-bigquery <spec>` by hand) | Whole table per export, `WRITE_TRUNCATE_DATA` | `glamira_raw.<table>` and `_LOADED.json`; [runbook](docs/runbooks/bigquery_load.md) |

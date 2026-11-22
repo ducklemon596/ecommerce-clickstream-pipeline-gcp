@@ -152,7 +152,7 @@ The upload and the load are built in the [warehouse package](../../src/glamira_p
 | Counting all 65 chunks | 21 s (`COUNT_SCAN` on `_id_`) |
 | Physical order | 44% of adjacent documents ascend by `_id`, so natural order is not `_id` order |
 
-**Full runs:** see the [report](../reports/full_export_avro.md).
+**Full runs:** see the [report](../reports/full_export.md).
 - Every chunk committed on attempt 1.
 - Reading by `_id` range is 13–14% of the work; convert and write dominate. The extra server cost of sorted reads therefore does not matter.
 - With 3 workers: export 52 min 46 s, then `verify-export` 53 s.

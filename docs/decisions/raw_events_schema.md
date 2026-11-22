@@ -247,12 +247,9 @@ Each conversion is counted by the exporter and recorded with the export run, so 
   - Conversions: 27,350 / 27,340 bool → string in `utm_*`, 26,066 objects → `option_filter`, 101 `order_id` int/double → string, 1,740 cart product IDs, 43 `""` → `[]`.
 - **Enrichment tables:** types and modes come from read-only full scans of `ip_locations`, `products` and `product_option_values` on 2026-11-17.
 
-- **Full-data export (2026-11-17):** all four tables, 45,614,951 rows, with **0 violations**, so no unplanned case exists in the current data ([report](../reports/full_export_avro.md)).
+- **Full-data export:** all four tables, 45,614,951 rows, with **0 violations**, so no unplanned case exists in the current data. This held for Avro on 2026-11-17 and for Parquet on 2026-11-22 ([report](../reports/full_export.md)).
 
-- **BigQuery loads.** The full Avro export was loaded on 2026-11-18. TIMESTAMP, REQUIRED modes, empty arrays, the null STRUCT, NUMERIC and partitioning all matched the export ([load report](../reports/bigquery_load.md)). As Parquet, one week of events (5.5 M rows) loaded into the contract table three times with identical results ([format benchmark](../../benchmarks/README.md)).
-
-**Still to verify**
-- **The full Parquet export and load** of all four tables, including `products` with its NUMERIC and REQUIRED STRUCT columns.
+- **BigQuery loads.** The full export was loaded as Avro on 2026-11-18 and as Parquet on 2026-11-22. Both times, these all matched the export: TIMESTAMP, REQUIRED modes (including the `products.source` STRUCT), empty arrays, the null STRUCT, NUMERIC, partitioning, the 65 daily counts and the join coverage ([load report](../reports/bigquery_load.md)).
 
 ## Personal data
 

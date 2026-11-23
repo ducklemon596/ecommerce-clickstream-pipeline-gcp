@@ -15,3 +15,10 @@ clean-targets: ["target", "dbt_packages"]
 
 flags:
   send_anonymous_usage_stats: false
+
+models:
+  glamira:
+    profiling:
+      # Profiles of the raw sources, written to <target dataset>_profiling.
+      +schema: profiling
+      +materialized: table

@@ -20,3 +20,16 @@ cd dbt && uv run --group dbt dbt debug --profiles-dir .
 | `prod` | `glamira_raw` | `glamira_dbt` | 50 GB |
 
 Every query is capped by `maximum_bytes_billed`: a query that would scan more fails instead of being billed. Develop on `sample`, and dry-run a new query (`bq query --dry_run`) before running it on `prod`.
+
+## Profiling the raw layer
+
+`models/profiling/` profiles every raw table with [dbt_profiler](https://hub.getdbt.com/data-mie/dbt_profiler/latest/) and writes one table per source to `<target dataset>_profiling`:
+- `profile_<table>`: per column, the not-null and distinct proportions, distinct count, uniqueness, and min/max/avg/median for numbers and times;
+- `profile_events_arrays`: the ARRAY columns `option` and `cart_products`, which dbt_profiler cannot profile: array lengths, then null and distinct counts per element field.
+
+```bash
+cd dbt
+uv run --group dbt dbt deps --profiles-dir .
+uv run --group dbt dbt build -s profiling --profiles-dir .                 # sample: events only
+uv run --group dbt dbt build -s profiling --target prod --profiles-dir .   # all four tables
+```

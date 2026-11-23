@@ -1,0 +1,30 @@
+# Copy to ~/.dbt/profiles.yml, or keep it here as dbt/profiles.yml (git-ignored).
+# Authentication uses Application Default Credentials:
+#   gcloud auth application-default login
+# Required environment variable: GCP_PROJECT (the project that runs and pays for the queries).
+glamira:
+  target: sample
+  outputs:
+    # 100K-event sample: cheap, used to develop and check every model first.
+    sample:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT') }}"
+      dataset: glamira_dbt_sample        # where dbt writes its own models
+      location: asia-southeast1
+      threads: 4
+      job_execution_timeout_seconds: 600
+      job_retries: 1
+      maximum_bytes_billed: 1000000000   # 1 GB: a query above this fails instead of billing
+
+    # Full raw layer (about 25 GB logical). Dry-run a new query before running it here.
+    prod:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT') }}"
+      dataset: glamira_dbt
+      location: asia-southeast1
+      threads: 4
+      job_execution_timeout_seconds: 900
+      job_retries: 1
+      maximum_bytes_billed: 50000000000  # 50 GB: twice the raw layer

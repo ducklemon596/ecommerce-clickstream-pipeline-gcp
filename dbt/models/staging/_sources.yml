@@ -1,0 +1,63 @@
+version: 2
+
+# The raw layer loaded by the bigquery-loader function. Tables are created from the
+# committed contract (schemas/raw/*.bq.json), so every column already carries its type,
+# mode and description in BigQuery; dbt docs reads them from there. This file adds
+# table-level context and the keys only. Full definitions: docs/raw_layer_contract.md.
+#
+# Dataset: glamira_raw on prod. The sample target reads glamira_raw_sample, which holds
+# `events` only (100K rows); the other three tables exist on prod only.
+sources:
+  - name: raw
+    database: "{{ target.project }}"
+    schema: "{{ var('raw_dataset', 'glamira_raw_sample' if target.name == 'sample' else 'glamira_raw') }}"
+    description: >
+      Raw layer: MongoDB collections exported as Parquet, loaded unchanged except for
+      type conversion and HMAC pseudonymization of personal data.
+    tables:
+      - name: events
+        description: >
+          One row per tracking event from countly.summary (41,432,473 rows,
+          2020-04-01 to 2020-06-04). Event-specific fields are NULL on other event
+          types, so NULL rates must be read per `collection`. Partitioned by day on
+          `time_stamp`, clustered by `collection`.
+        columns:
+          - name: _id
+            description: Event ID, unique (source ObjectId).
+          - name: collection
+            description: Event type; decides which optional fields are set.
+          - name: time_stamp
+            description: Event time, UTC. Partitioning column.
+          - name: ip_hash
+            description: Joins ip_locations.ip_hash.
+          - name: product_id
+            description: Joins products.product_id on product events.
+
+      - name: ip_locations
+        description: >
+          One row per distinct client IP of the events (3,239,627 rows), geolocated
+          offline with an IP2Location database. `status` tells why location fields
+          are NULL.
+        columns:
+          - name: ip_hash
+            description: Primary key; HMAC-SHA256 of the normalized IP.
+
+      - name: products
+        description: >
+          One row per product ID referenced by the events (19,557 rows), crawled from
+          the storefront in 2026. Attribute fields are NULL unless `status` is success.
+        columns:
+          - name: product_id
+            description: Primary key, same form as events.product_id.
+
+      - name: product_option_values
+        description: >
+          Option values of the crawled products (923,294 rows): one row per
+          product, option and value. Joins events option[].option_id / value_id.
+        columns:
+          - name: product_id
+            description: Joins products.product_id.
+          - name: option_id
+            description: Option ID.
+          - name: value_id
+            description: Value ID; NULL for free-text options such as engraving.

@@ -25,3 +25,10 @@ AGENTS.md
 
 # Local specifications (kept out of version control)
 /docs/specifications/
+
+# dbt: build output, installed packages, local connection settings
+/dbt/target/
+/dbt/dbt_packages/
+/dbt/logs/
+/dbt/profiles.yml
+/dbt/.user.yml

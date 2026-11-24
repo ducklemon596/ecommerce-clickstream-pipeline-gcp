@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: profile_events
+    description: dbt_profiler column profile of raw events, without the ARRAY columns.
+  - name: profile_events_arrays
+    description: >
+      Profile of the ARRAY columns option and cart_products of raw events: array
+      lengths, then null and distinct counts of each element field.
+  - name: profile_ip_locations
+    description: dbt_profiler column profile of raw ip_locations (prod only).
+  - name: profile_products
+    description: dbt_profiler column profile of raw products (prod only).
+  - name: profile_product_option_values
+    description: dbt_profiler column profile of raw product_option_values (prod only).

@@ -1,0 +1,24 @@
+name: glamira
+version: "0.1.0"
+config-version: 2
+require-dbt-version: [">=1.10.0", "<2.0.0"]
+
+# Connection settings live in profiles.yml (see profiles.yml.example).
+profile: glamira
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+
+clean-targets: ["target", "dbt_packages"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+models:
+  glamira:
+    profiling:
+      # Profiles of the raw sources, written to <target dataset>_profiling.
+      +schema: profiling
+      +materialized: table

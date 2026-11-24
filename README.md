@@ -9,7 +9,7 @@ Batch data engineering on **41.4 million e-commerce tracking events** from Glami
 - publishes the files to GCS, where a Cloud Function loads them into BigQuery;
 - records how every decision was made and verified.
 
-It answers to three business questions: geographic performance, product and category performance, and time trends. The exporter and the [raw layer contract](docs/raw_layer_contract.md) are built. The full data has been exported, published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. The raw files are Parquet, chosen over Avro and JSONL by a [file-format decision](docs/decisions/raw_file_format.md). dbt models and dashboards come next.
+It answers to three business questions: geographic performance, product and category performance, and time trends. The exporter and the [raw layer contract](docs/raw_layer_contract.md) are built. The full data has been exported, published to GCS and loaded into BigQuery (`glamira_raw`) by an event-triggered Cloud Function. The raw files are Parquet, chosen over Avro and JSONL by a [file-format decision](docs/decisions/raw_file_format.md). The raw layer is profiled in dbt, which will also hold the staging models; dashboards come next.
 
 ## Results at a glance
 
@@ -25,8 +25,9 @@ It answers to three business questions: geographic performance, product and cate
 | Product options | 923,294 option-value reference rows for decoding event option IDs |
 | Raw export (full) | 4 tables, 45,614,951 rows, 4.69 GB of Parquet in 43 min on the VM with 3 workers, including a 30 s `verify-export` (Avro: 9.30 GB, 54 min; one process: 2 h 07 min). 0 contract violations, no retries. On the 100K sample, no raw IP, email, device ID or customer ID appeared in the decoded rows, and an interrupted run resumed to the same content hash. [Report](docs/reports/full_export.md) |
 | BigQuery load (full) | `glamira_raw`: 4 tables, 45,614,951 rows, 25.03 GB, one load job per table. Publish to GCS took 48 s; the Cloud Function finished all loads 23 s later (`events` load job 14 s, 29 s with Avro). Every row count and all 65 day counts match the export; geolocation and product joins reproduce 98.88% and 1.54%. [Report](docs/reports/bigquery_load.md) |
+| Data profile (BigQuery) | dbt profiles every column of the 4 raw tables in one 23.1 GiB scan: null and distinct counts, ranges, array lengths. Every value comparable with the MongoDB profiles matches. Findings for staging: 6 constant columns, a dirty `show_recommendation` flag (140 malformed values), cart lines with prices on 4.26%, negative prices. [Report](docs/reports/data_profiling.md) |
 
-Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
+Measurements are from 2026-11-01 to 2026-11-24: MongoDB stages and the export on the project VM, the sample checks of the export on a local MongoDB, the load and the profile in BigQuery. The reports linked below hold the full numbers.
 
 ## Architecture
 
@@ -46,6 +47,7 @@ flowchart LR
     M & IL & P -->|export-raw: contract + HMAC| X[Parquet parts<br/>+ manifest]
     X -->|publish-export| GCS[(GCS raw/)]
     GCS -->|_load.json → Cloud Function| BQ[(BigQuery glamira_raw.*)]
+    BQ -->|dbt sources| D[dbt profiling<br/>→ staging next]
 ```
 
 - **Hosting:** MongoDB runs on a Compute Engine VM with its data on a dedicated XFS persistent disk.
@@ -70,6 +72,7 @@ flowchart LR
 | 5b | Verify a stored export | `uv run verify-export <export dir>` | Checksums and inventory, no decoding (`--full` decodes every record) | Pass or exit 1 with the first difference |
 | 6 | Publish to GCS | `uv run publish-export <export dir> --bucket …` | Verified export; create-only uploads, `_load.json` last | `gs://…/raw/<table>/export_id=<id>/`; [warehouse guide](src/glamira_pipeline/warehouse/README.md) |
 | 6b | Load BigQuery | Cloud Function `bigquery-loader` on `_load.json` (`uv run load-bigquery <spec>` by hand) | Whole table per export, `WRITE_TRUNCATE_DATA` | `glamira_raw.<table>` and `_LOADED.json`; [runbook](docs/runbooks/bigquery_load.md) |
+| 7 | Profile the raw layer | `cd dbt && uv run --group dbt dbt build -s profiling --target prod --profiles-dir .` | Full, one scan per table (default target: 100K sample) | `glamira_dbt_profiling.profile_<table>`, profiles in `dbt docs`; [dbt guide](dbt/README.md), [report](docs/reports/data_profiling.md) |
 
 Every stage is safe to rerun. Reruns either replace outputs atomically or skip work that is already finished.
 
@@ -150,7 +153,7 @@ uv run extract-sample --limit 100000                  # needs the source .tar.gz
 uv run assess-data-quality
 ```
 
-`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite.
+`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite. The dbt project has its own setup (`uv sync --group dbt`, a BigQuery profile): see the [dbt guide](dbt/README.md).
 
 ## Running on the VM (full data)
 
@@ -214,10 +217,11 @@ schemas/raw/        # generated BigQuery (.bq.json) schemas; the Parquet schema 
 functions/          # Cloud Function entry point (bigquery_loader/)
 scripts/            # deploy script for the function
 sql/checks/         # BigQuery verification queries
+dbt/                # dbt project: raw sources and their profiles (staging models next)
 docs/
 ├── raw_layer_contract.md
 ├── runbooks/       # GCP setup and the BigQuery load, step by step
-├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load)
+├── reports/        # measured results (data quality, scope, product IDs, full load, full export, BigQuery load, data profile)
 └── decisions/      # decision records
 tests/unit/         # synthetic fixtures; no live services
 tests/integration/  # need a disposable local MongoDB
@@ -231,12 +235,13 @@ tests/integration/  # need a disposable local MongoDB
   - raw dumps, samples and generated data (`data/` is ignored);
   - IP lists (raw IPs are treated as personal data).
 - **VM cost:** the VM is stopped whenever no stage is running; persistent disks still incur storage cost.
+- **BigQuery cost:** every dbt query is capped by `maximum_bytes_billed` (1 GB on the sample target, 50 GB on prod). A full profile scans 23.1 GiB, inside the 1 TB monthly free tier.
 
 ## Limitations and next steps
 
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Delete the duplicate Eventarc trigger, and narrow the loader's invoker role to the function ([load report](docs/reports/bigquery_load.md#6-limitations-and-next-steps)).
-  - Build the staging models in dbt on top of `glamira_raw.*`.
+  - Cloud housekeeping ([load report](docs/reports/bigquery_load.md#6-limitations-and-next-steps)): narrow the loader's invoker role to the function, return the VM's storage scope to read-only, and delete the superseded Avro export.
+  - Build the staging models in dbt on top of `glamira_raw.*`, applying the [profile findings](docs/reports/data_profiling.md#6-findings-and-what-dbt-staging-must-do) as cleaning rules and tests.
   - Use least-privilege MongoDB users for profiling and crawling.

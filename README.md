@@ -27,7 +27,7 @@ It answers to three business questions: geographic performance, product and cate
 | BigQuery load (full) | `glamira_raw`: 4 tables, 45,614,951 rows, 25.03 GB, one load job per table. Publish to GCS took 48 s; the Cloud Function finished all loads 23 s later (`events` load job 14 s, 29 s with Avro). Every row count and all 65 day counts match the export; geolocation and product joins reproduce 98.88% and 1.54%. [Report](docs/reports/bigquery_load.md) |
 | Data profile (BigQuery) | dbt profiles every column of the 4 raw tables in one 23.1 GiB scan: null and distinct counts, ranges, array lengths. Every value comparable with the MongoDB profiles matches. Findings for staging: 6 constant columns, a dirty `show_recommendation` flag (140 malformed values), cart lines with prices on 4.26%, negative prices. [Report](docs/reports/data_profiling.md) |
 
-Measurements are from 2026-11-01 to 2026-11-17 on the project VM; the sample checks of the export ran on a local MongoDB. The reports linked below hold the full numbers.
+Measurements are from 2026-11-01 to 2026-11-24: MongoDB stages and the export on the project VM, the sample checks of the export on a local MongoDB, the load and the profile in BigQuery. The reports linked below hold the full numbers.
 
 ## Architecture
 
@@ -47,6 +47,7 @@ flowchart LR
     M & IL & P -->|export-raw: contract + HMAC| X[Parquet parts<br/>+ manifest]
     X -->|publish-export| GCS[(GCS raw/)]
     GCS -->|_load.json → Cloud Function| BQ[(BigQuery glamira_raw.*)]
+    BQ -->|dbt sources| D[dbt profiling<br/>→ staging next]
 ```
 
 - **Hosting:** MongoDB runs on a Compute Engine VM with its data on a dedicated XFS persistent disk.
@@ -152,7 +153,7 @@ uv run extract-sample --limit 100000                  # needs the source .tar.gz
 uv run assess-data-quality
 ```
 
-`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite.
+`tests/integration/` holds tests that need a real local MongoDB and are not part of the unit suite. The dbt project has its own setup (`uv sync --group dbt`, a BigQuery profile): see the [dbt guide](dbt/README.md).
 
 ## Running on the VM (full data)
 
@@ -234,12 +235,13 @@ tests/integration/  # need a disposable local MongoDB
   - raw dumps, samples and generated data (`data/` is ignored);
   - IP lists (raw IPs are treated as personal data).
 - **VM cost:** the VM is stopped whenever no stage is running; persistent disks still incur storage cost.
+- **BigQuery cost:** every dbt query is capped by `maximum_bytes_billed` (1 GB on the sample target, 50 GB on prod). A full profile scans 23.1 GiB, inside the 1 TB monthly free tier.
 
 ## Limitations and next steps
 
 - **Old geolocation data:** the BIN is dated 2016 and lacks IPv6, so locations are estimates. Confirm licensing before redistribution.
 - **Catalog dates:** the product catalog and prices are from 2026, not 2020. Revenue must come from event prices, whose currency and locale semantics are still unconfirmed.
 - **Next:**
-  - Delete the duplicate Eventarc trigger, and narrow the loader's invoker role to the function ([load report](docs/reports/bigquery_load.md#6-limitations-and-next-steps)).
+  - Cloud housekeeping ([load report](docs/reports/bigquery_load.md#6-limitations-and-next-steps)): narrow the loader's invoker role to the function, return the VM's storage scope to read-only, and delete the superseded Avro export.
   - Build the staging models in dbt on top of `glamira_raw.*`, applying the [profile findings](docs/reports/data_profiling.md#6-findings-and-what-dbt-staging-must-do) as cleaning rules and tests.
   - Use least-privilege MongoDB users for profiling and crawling.

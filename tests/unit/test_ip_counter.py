@@ -1,6 +1,5 @@
 """Synthetic tests for the in-memory IP enrichment pipeline."""
 from collections import Counter
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace

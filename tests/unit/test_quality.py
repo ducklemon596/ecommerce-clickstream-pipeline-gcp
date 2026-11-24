@@ -1,7 +1,6 @@
 """Synthetic checks for sample quality metrics and report generation."""
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-import json
 from pathlib import Path
 import subprocess
 import sys

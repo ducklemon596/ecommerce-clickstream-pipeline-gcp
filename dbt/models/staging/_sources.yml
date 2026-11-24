@@ -16,11 +16,10 @@ sources:
       type conversion and HMAC pseudonymization of personal data.
     tables:
       - name: events
-        description: >
-          One row per tracking event from countly.summary (41,432,473 rows,
-          2020-04-01 to 2020-06-04). Event-specific fields are NULL on other event
-          types, so NULL rates must be read per `collection`. Partitioned by day on
-          `time_stamp`, clustered by `collection`.
+        description: |
+          One row per tracking event from countly.summary (41,432,473 rows, 2020-04-01 to 2020-06-04). Event-specific fields are NULL on other event types, so NULL rates must be read per `collection`. Partitioned by day on `time_stamp`, clustered by `collection`.
+
+          {{ doc('profile_events') }}
         columns:
           - name: _id
             description: Event ID, unique (source ObjectId).
@@ -34,26 +33,28 @@ sources:
             description: Joins products.product_id on product events.
 
       - name: ip_locations
-        description: >
-          One row per distinct client IP of the events (3,239,627 rows), geolocated
-          offline with an IP2Location database. `status` tells why location fields
-          are NULL.
+        description: |
+          One row per distinct client IP of the events (3,239,627 rows), geolocated offline with an IP2Location database. `status` tells why location fields are NULL.
+
+          {{ doc('profile_ip_locations') }}
         columns:
           - name: ip_hash
             description: Primary key; HMAC-SHA256 of the normalized IP.
 
       - name: products
-        description: >
-          One row per product ID referenced by the events (19,557 rows), crawled from
-          the storefront in 2026. Attribute fields are NULL unless `status` is success.
+        description: |
+          One row per product ID referenced by the events (19,557 rows), crawled from the storefront in 2026. Attribute fields are NULL unless `status` is success.
+
+          {{ doc('profile_products') }}
         columns:
           - name: product_id
             description: Primary key, same form as events.product_id.
 
       - name: product_option_values
-        description: >
-          Option values of the crawled products (923,294 rows): one row per
-          product, option and value. Joins events option[].option_id / value_id.
+        description: |
+          Option values of the crawled products (923,294 rows): one row per product, option and value. Joins events option[].option_id / value_id.
+
+          {{ doc('profile_product_option_values') }}
         columns:
           - name: product_id
             description: Joins products.product_id.

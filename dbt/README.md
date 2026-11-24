@@ -33,3 +33,12 @@ uv run --group dbt dbt deps --profiles-dir .
 uv run --group dbt dbt build -s profiling --profiles-dir .                 # sample: events only
 uv run --group dbt dbt build -s profiling --target prod --profiles-dir .   # all four tables
 ```
+
+The profiles also appear in `dbt docs`: each source's description ends with a docs block from `models/profiling/docs/<table>.md`. These files are a committed snapshot of the prod profile. Regenerate them after rebuilding the profiles; this reads only the small profile tables:
+
+```bash
+for t in events ip_locations products product_option_values; do
+  uv run --group dbt dbt -q run-operation print_profile_doc --args "{table: $t}" --target prod --profiles-dir . > models/profiling/docs/$t.md
+done
+uv run --group dbt dbt docs generate --target prod --profiles-dir . && uv run --group dbt dbt docs serve --profiles-dir .
+```
